@@ -12,8 +12,7 @@ export const postureExplainSchema = {
       maxItems: 4,
     },
     medicalBoundary: { type: "string" },
-    followUpQuestion: { type: "string" },
+    followUpQuestion: { type: ["string", "null"] },
   },
-  required: ["title", "summary", "explanation", "suggestions", "medicalBoundary"],
+  required: ["title", "summary", "explanation", "suggestions", "medicalBoundary", "followUpQuestion"],
 } as const;
-

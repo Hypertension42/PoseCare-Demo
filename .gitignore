@@ -16,3 +16,4 @@ pnpm-debug.log*
 coverage/
 .vite/
 *.tsbuildinfo
+.vercel
