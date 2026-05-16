@@ -1,135 +1,157 @@
-import { ChangeEvent, startTransition, useEffect, useState } from "react";
+import { ChangeEvent, startTransition, useMemo, useRef, useState } from "react";
+
+import { detectPoseLandmarks } from "./pose/poseLandmarker";
+import { analyzeSittingPosture } from "./pose/postureRules";
+import type { LandmarkPoint, PostureAnalysis } from "./pose/types";
 
 type Stage = "capture" | "analyzing" | "result" | "report";
-
-type RiskPoint = {
-  label: string;
-  value: number;
-  tone: "high" | "mid";
-  detail: string;
+type SpeechRecognitionEventLike = {
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
+  };
 };
-
-type Finding = {
-  part: string;
-  issue: string;
-  severity: string;
-  message: string;
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
 };
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+type WindowWithSpeech = Window &
+  typeof globalThis & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
 
 const stageOrder: Stage[] = ["capture", "analyzing", "result", "report"];
 
-const stageMeta: Record<Stage, { title: string; subtitle: string; cta: string }> = {
-  capture: {
-    title: "Capture",
-    subtitle: "拍下当前坐姿，系统从颈部、肩线和腰背入手做风险筛查。",
-    cta: "开始分析",
-  },
-  analyzing: {
-    title: "Analyzing",
-    subtitle: "正在比对姿态关键点和久坐风险阈值，生成本次体检结果。",
-    cta: "分析中",
-  },
-  result: {
-    title: "Result",
-    subtitle: "本次检测判定为中等姿势风险，重点关注颈部前伸和腰背负荷。",
-    cta: "生成体检卡",
-  },
-  report: {
-    title: "ReportCard",
-    subtitle: "导出一张适合展示和复查的姿势体检卡。",
-    cta: "重新检测",
-  },
+const defaultQuestion = "我这个坐姿哪里不对？";
+const sampleImageUrl = "/sample-posture.svg";
+
+const stageTitle: Record<Stage, string> = {
+  capture: "Capture",
+  analyzing: "Analyzing",
+  result: "Result",
+  report: "ReportCard",
 };
 
-const sceneOptions = [
-  { label: "久坐姿势", value: "久坐姿势" },
-  { label: "站姿体态", value: "站姿体态" },
-  { label: "深蹲动作", value: "深蹲动作" },
+const poseConnections: Array<[number, number]> = [
+  [0, 11],
+  [0, 12],
+  [11, 12],
+  [11, 23],
+  [12, 24],
+  [23, 24],
+  [11, 13],
+  [13, 15],
+  [12, 14],
+  [14, 16],
+  [23, 25],
+  [25, 27],
+  [24, 26],
+  [26, 28],
 ];
 
-const defaultQuestion = "我这个坐姿哪里不对？";
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片加载失败，请换一张清晰的单人坐姿图。"));
+    image.src = src;
+  });
+}
 
-const findings: Finding[] = [
-  {
-    part: "颈部",
-    issue: "头前伸",
-    severity: "明显",
-    message: "头部重心前移，颈肩负担增加，长时间维持容易诱发酸胀。",
-  },
-  {
-    part: "肩部",
-    issue: "圆肩倾向",
-    severity: "轻中度",
-    message: "双肩轻微内扣，左侧更明显，胸廓打开不足。",
-  },
-  {
-    part: "腰背",
-    issue: "躯干前倾",
-    severity: "中度",
-    message: "上半身前倾明显，久坐时腰背支撑不足。",
-  },
-];
+function visibleLandmarks(landmarks: LandmarkPoint[]) {
+  return landmarks.filter((landmark) => (landmark.visibility ?? 0) >= 0.45);
+}
 
-const suggestions = [
-  "把屏幕上沿调整到接近眼平高度，减少持续低头。",
-  "坐深椅背，让坐骨稳定落位，肩膀放松回正。",
-  "每 30-45 分钟起身活动 2 分钟，做颈肩后缩和胸椎伸展。",
-];
+function connectionKey([from, to]: [number, number]) {
+  return `${from}-${to}`;
+}
 
-const riskPoints: RiskPoint[] = [
-  {
-    label: "颈部",
-    value: 76,
-    tone: "high",
-    detail: "头前伸明显",
-  },
-  {
-    label: "肩部",
-    value: 64,
-    tone: "mid",
-    detail: "双肩轻度前扣",
-  },
-  {
-    label: "腰背",
-    value: 71,
-    tone: "high",
-    detail: "躯干前倾偏大",
-  },
-];
+function buildConnectionStyle(from: LandmarkPoint, to: LandmarkPoint) {
+  const fromX = from.x * 100;
+  const fromY = from.y * 100;
+  const toX = to.x * 100;
+  const toY = to.y * 100;
+  const deltaX = toX - fromX;
+  const deltaY = toY - fromY;
+  const length = Math.hypot(deltaX, deltaY);
+  const angle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
 
-const overlayDots = [
-  { top: "18%", left: "50%", label: "颈部" },
-  { top: "31%", left: "42%", label: "肩部" },
-  { top: "31%", left: "58%", label: "肩部" },
-  { top: "52%", left: "48%", label: "腰背" },
-  { top: "76%", left: "50%", label: "骨盆" },
-];
+  return {
+    left: `${fromX}%`,
+    top: `${fromY}%`,
+    width: `${length}%`,
+    transform: `rotate(${angle}deg)`,
+  };
+}
 
 export default function App() {
   const [stage, setStage] = useState<Stage>("capture");
-  const [scene, setScene] = useState(sceneOptions[0].value);
   const [question, setQuestion] = useState(defaultQuestion);
-  const [previewUrl, setPreviewUrl] = useState("/sample-posture.svg");
+  const [previewUrl, setPreviewUrl] = useState(sampleImageUrl);
+  const [analysis, setAnalysis] = useState<PostureAnalysis | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isModelReady, setIsModelReady] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported] = useState(() => {
+    const speechWindow = window as WindowWithSpeech;
+    return Boolean(speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition);
+  });
+  const latestBlobUrl = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (stage !== "analyzing") {
-      return undefined;
-    }
+  const landmarks = analysis?.landmarks ?? [];
+  const visiblePoints = useMemo(() => visibleLandmarks(landmarks), [landmarks]);
+  const canShowResult = stage === "result" || stage === "report";
 
-    const timeoutId = window.setTimeout(() => {
+  async function runAnalysis() {
+    setStage("analyzing");
+    setAnalysisError(null);
+
+    try {
+      const image = await loadImage(previewUrl);
+      const detectedLandmarks = await detectPoseLandmarks(image);
+      setIsModelReady(true);
+
+      if (detectedLandmarks.length === 0) {
+        setAnalysis(null);
+        setAnalysisError("没有识别到完整人体姿态。请上传清晰、单人、上半身和骨盆都在画面里的坐姿照片。");
+        setStage("capture");
+        return;
+      }
+
+      const nextAnalysis = analyzeSittingPosture(detectedLandmarks, question);
+
+      if (!nextAnalysis) {
+        setAnalysis(null);
+        setAnalysisError("关键点不足，暂时无法评估颈肩腰背。请换一张人体更完整的坐姿图片。");
+        setStage("capture");
+        return;
+      }
+
       startTransition(() => {
+        setAnalysis(nextAnalysis);
         setStage("result");
       });
-    }, 1800);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [stage]);
+    } catch (error) {
+      setAnalysis(null);
+      setAnalysisError(error instanceof Error ? error.message : "姿态识别失败，请稍后重试。");
+      setStage("capture");
+    }
+  }
 
   function goToNextStage() {
     if (stage === "capture") {
-      startTransition(() => {
-        setStage("analyzing");
-      });
+      void runAnalysis();
       return;
     }
 
@@ -144,14 +166,19 @@ export default function App() {
       startTransition(() => {
         setStage("capture");
       });
-      return;
     }
   }
 
   function handleSampleFrame() {
-    setPreviewUrl("/sample-posture.svg");
+    if (latestBlobUrl.current) {
+      URL.revokeObjectURL(latestBlobUrl.current);
+      latestBlobUrl.current = null;
+    }
+
+    setPreviewUrl(sampleImageUrl);
     setQuestion(defaultQuestion);
-    setScene(sceneOptions[0].value);
+    setAnalysis(null);
+    setAnalysisError(null);
     startTransition(() => {
       setStage("capture");
     });
@@ -163,17 +190,67 @@ export default function App() {
       return;
     }
 
+    if (latestBlobUrl.current) {
+      URL.revokeObjectURL(latestBlobUrl.current);
+    }
+
     const nextUrl = URL.createObjectURL(file);
-    setPreviewUrl((currentUrl) => {
-      if (currentUrl.startsWith("blob:")) {
-        URL.revokeObjectURL(currentUrl);
-      }
-      return nextUrl;
-    });
+    latestBlobUrl.current = nextUrl;
+    setPreviewUrl(nextUrl);
+    setAnalysis(null);
+    setAnalysisError(null);
     startTransition(() => {
       setStage("capture");
     });
   }
+
+  function handleVoiceQuestion() {
+    const speechWindow = window as WindowWithSpeech;
+    const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+
+    if (!Recognition) {
+      setAnalysisError("当前浏览器不支持语音识别，请直接输入问题。");
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.lang = "zh-CN";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript.trim();
+      if (transcript) {
+        setQuestion(transcript);
+        setAnalysis(null);
+      }
+    };
+    recognition.onerror = () => {
+      setAnalysisError("语音识别失败，请换文字输入。");
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    setAnalysisError(null);
+    setIsListening(true);
+    recognition.start();
+  }
+
+  const currentSubtitle =
+    stage === "capture"
+      ? "上传一张清晰坐姿图，AI 会读取人体关键点，再回答你的姿势问题。"
+      : stage === "analyzing"
+        ? "正在加载姿态模型并检测人体关键点，随后用坐姿规则生成风险结果。"
+        : analysis?.summary ?? "请先完成一次坐姿图片分析。";
+
+  const ctaText =
+    stage === "capture"
+      ? "开始真实分析"
+      : stage === "analyzing"
+        ? "识别中"
+        : stage === "result"
+          ? "生成体检卡"
+          : "重新检测";
 
   return (
     <main className="app-shell">
@@ -183,7 +260,9 @@ export default function App() {
             <p className="eyebrow">PoseCare / 视觉搜索 Demo</p>
             <h1>姿势问诊镜</h1>
           </div>
-          <span className="status-pill">中等风险</span>
+          <span className={`status-pill ${analysis ? analysis.riskPoints[0]?.tone ?? "mid" : "mid"}`}>
+            {analysis?.riskLevel ?? "待分析"}
+          </span>
         </header>
 
         <nav className="stage-switcher" aria-label="流程状态">
@@ -193,8 +272,9 @@ export default function App() {
               type="button"
               className={item === stage ? "stage-btn active" : "stage-btn"}
               onClick={() => setStage(item)}
+              disabled={item === "analyzing" || ((item === "result" || item === "report") && !analysis)}
             >
-              {stageMeta[item].title}
+              {stageTitle[item]}
             </button>
           ))}
         </nav>
@@ -205,23 +285,62 @@ export default function App() {
               <div className="scan-stage" data-stage={stage}>
                 <div className="scan-grid" />
                 <div className="pose-card">
-                  <img className="pose-photo" src={previewUrl} alt="姿势检测样例" />
+                  <img className="pose-photo" src={previewUrl} alt="姿势检测画面" />
                   <div className="pose-overlay" aria-hidden="true">
-                    <div className="skeleton skeleton-head" />
-                    <div className="skeleton skeleton-neck" />
-                    <div className="skeleton skeleton-shoulder" />
-                    <div className="skeleton skeleton-spine" />
-                    <div className="skeleton skeleton-hip" />
-                    {overlayDots.map((dot) => (
+                    {poseConnections.map(([fromIndex, toIndex]) => {
+                      const from = landmarks[fromIndex];
+                      const to = landmarks[toIndex];
+
+                      if (!from || !to || (from.visibility ?? 0) < 0.35 || (to.visibility ?? 0) < 0.35) {
+                        return null;
+                      }
+
+                      return (
+                        <span
+                          key={connectionKey([fromIndex, toIndex])}
+                          className="pose-bone"
+                          style={buildConnectionStyle(from, to)}
+                        />
+                      );
+                    })}
+
+                    {visiblePoints.map((landmark, index) => (
                       <span
-                        key={`${dot.top}-${dot.left}-${dot.label}`}
-                        className="risk-dot"
-                        style={{ top: dot.top, left: dot.left }}
-                        title={dot.label}
+                        key={`${index}-${landmark.x}-${landmark.y}`}
+                        className="pose-landmark"
+                        style={{ left: `${landmark.x * 100}%`, top: `${landmark.y * 100}%` }}
                       />
                     ))}
+
+                    {analysis?.riskPoints.map((item) => {
+                      const target =
+                        item.label === "颈部"
+                          ? landmarks[0]
+                          : item.label === "肩线"
+                            ? landmarks[11]
+                            : landmarks[23];
+
+                      if (!target) {
+                        return null;
+                      }
+
+                      return (
+                        <span
+                          key={item.label}
+                          className={`risk-dot ${item.tone}`}
+                          style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}
+                          title={item.detail}
+                        />
+                      );
+                    })}
                   </div>
-                  <div className="scan-badge">AI posture overlay</div>
+                  <div className="scan-badge">
+                    {stage === "analyzing"
+                      ? "detecting landmarks"
+                      : analysis
+                        ? `${analysis.detectedKeypoints} keypoints`
+                        : "upload posture image"}
+                  </div>
                 </div>
 
                 <div className="pulse-ring pulse-ring-1" />
@@ -229,45 +348,45 @@ export default function App() {
               </div>
 
               <div className="visual-caption">
-                <span>当前样例</span>
-                <strong>久坐姿势 / 中等风险</strong>
+                <span>{isModelReady ? "模型已加载" : "模型待加载"}</span>
+                <strong>{analysis ? `${analysis.riskLevel} / ${analysis.score} 分` : "久坐姿势 / 单图分析"}</strong>
               </div>
             </div>
 
             <div className="hero-side">
               <div className="hero-copy">
-                <p className="eyebrow">{stageMeta[stage].title}</p>
-                <h2>{stageMeta[stage].subtitle}</h2>
+                <p className="eyebrow">{stageTitle[stage]}</p>
+                <h2>{currentSubtitle}</h2>
               </div>
 
               <div className="capture-tools">
                 <div className="scene-tabs" aria-label="检测场景">
-                  {sceneOptions.map((item) => (
-                    <button
-                      key={item.value}
-                      type="button"
-                      className={item.value === scene ? "scene-tab active" : "scene-tab"}
-                      onClick={() => setScene(item.value)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
+                  <button type="button" className="scene-tab active">
+                    久坐姿势
+                  </button>
+                  <button type="button" className="scene-tab locked" disabled>
+                    站姿待支持
+                  </button>
+                  <button type="button" className="scene-tab locked" disabled>
+                    深蹲待支持
+                  </button>
                 </div>
 
                 <div className="tool-row">
                   <label className="upload-btn">
                     上传图片
-                    <input
-                      accept="image/*"
-                      type="file"
-                      onChange={handleUploadChange}
-                    />
+                    <input accept="image/*" type="file" onChange={handleUploadChange} />
                   </label>
                   <button type="button" className="ghost-btn" onClick={handleSampleFrame}>
                     使用样例
                   </button>
-                  <button type="button" className="ghost-btn voice-btn">
-                    按住提问
+                  <button
+                    type="button"
+                    className={isListening ? "ghost-btn voice-btn active" : "ghost-btn voice-btn"}
+                    onClick={handleVoiceQuestion}
+                    disabled={!speechSupported || isListening}
+                  >
+                    {speechSupported ? (isListening ? "正在听" : "语音提问") : "语音不可用"}
                   </button>
                 </div>
 
@@ -279,6 +398,8 @@ export default function App() {
                     rows={2}
                   />
                 </label>
+
+                {analysisError && <p className="inline-error">{analysisError}</p>}
               </div>
             </div>
           </div>
@@ -287,28 +408,30 @@ export default function App() {
         <section className="metrics-strip">
           <div className="metric-chip">
             <span>场景</span>
-            <strong>{scene}</strong>
+            <strong>久坐姿势</strong>
           </div>
           <div className="metric-chip">
-            <span>本次检测</span>
-            <strong>12s</strong>
+            <span>关键点</span>
+            <strong>{analysis ? analysis.detectedKeypoints : "--"}</strong>
           </div>
           <div className="metric-chip">
             <span>置信度</span>
-            <strong>93%</strong>
+            <strong>{analysis ? `${analysis.confidence}%` : "--"}</strong>
           </div>
         </section>
 
-        {(stage === "result" || stage === "report") && (
+        {canShowResult && analysis && (
           <>
             <section className="card-section">
               <div className="section-head">
                 <h3>风险概览</h3>
-                <span className="risk-label">Medium Risk</span>
+                <span className={`risk-label ${analysis.riskPoints[0]?.tone ?? "mid"}`}>
+                  {analysis.riskLabel}
+                </span>
               </div>
 
               <div className="risk-list">
-                {riskPoints.map((item) => (
+                {analysis.riskPoints.map((item) => (
                   <div key={item.label} className="risk-row">
                     <div className="risk-title">
                       <strong>{item.label}</strong>
@@ -327,11 +450,11 @@ export default function App() {
               <article className="info-card">
                 <div className="section-head">
                   <h3>发现</h3>
-                  <span>3 条</span>
+                  <span>{analysis.findings.length} 条</span>
                 </div>
                 <ul className="bullet-list">
-                  {findings.map((item) => (
-                    <li key={item.issue}>
+                  {analysis.findings.map((item) => (
+                    <li key={`${item.part}-${item.issue}`}>
                       <strong>
                         {item.part} / {item.issue} / {item.severity}
                       </strong>
@@ -343,11 +466,12 @@ export default function App() {
 
               <article className="info-card">
                 <div className="section-head">
-                  <h3>建议</h3>
-                  <span>3 条</span>
+                  <h3>{analysis.guidance.title}</h3>
+                  <span>问题驱动</span>
                 </div>
-                <ul className="bullet-list">
-                  {suggestions.map((item) => (
+                <p className="agent-answer">{analysis.guidance.answer}</p>
+                <ul className="bullet-list compact">
+                  {analysis.guidance.suggestions.map((item) => (
                     <li key={item}>
                       <span>{item}</span>
                     </li>
@@ -365,32 +489,30 @@ export default function App() {
           </>
         )}
 
-        {stage === "report" && (
+        {stage === "report" && analysis && (
           <section className="report-card">
             <div className="report-card__header">
               <div>
                 <p className="eyebrow">PoseCare ReportCard</p>
                 <h3>姿势体检卡</h3>
               </div>
-              <span className="report-score">68 / 100</span>
+              <span className="report-score">{analysis.score} / 100</span>
             </div>
 
             <div className="report-layout">
               <img className="report-photo" src={previewUrl} alt="检测画面" />
               <div className="report-summary">
-                <p className="report-highlight">
-                  中等风险，重点关注颈部前伸、双肩前扣和腰背负荷。
-                </p>
+                <p className="report-highlight">{analysis.summary}</p>
                 <ul className="report-pills">
-                  <li>颈部前伸</li>
-                  <li>圆肩倾向</li>
-                  <li>腰背前倾</li>
+                  {analysis.findings.map((item) => (
+                    <li key={`${item.part}-${item.issue}`}>{item.issue}</li>
+                  ))}
                 </ul>
               </div>
             </div>
 
             <div className="report-advice">
-              {suggestions.map((item) => (
+              {analysis.guidance.suggestions.map((item) => (
                 <p key={item}>{item}</p>
               ))}
             </div>
@@ -399,7 +521,7 @@ export default function App() {
 
         <footer className="bottom-bar">
           <div>
-            <strong>{stageMeta[stage].title}</strong>
+            <strong>{stageTitle[stage]}</strong>
             <span>{stageOrder.indexOf(stage) + 1}/4</span>
           </div>
           <button
@@ -408,7 +530,7 @@ export default function App() {
             onClick={goToNextStage}
             disabled={stage === "analyzing"}
           >
-            {stageMeta[stage].cta}
+            {ctaText}
           </button>
         </footer>
       </section>

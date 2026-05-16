@@ -116,6 +116,18 @@ button {
   font-weight: 700;
 }
 
+.status-pill.low,
+.risk-label.low {
+  background: rgba(31, 143, 139, 0.12);
+  color: #106764;
+}
+
+.status-pill.high,
+.risk-label.high {
+  background: rgba(228, 82, 59, 0.12);
+  color: #a73524;
+}
+
 .stage-switcher,
 .scene-tabs,
 .metrics-strip {
@@ -154,10 +166,21 @@ button {
   font-weight: 700;
 }
 
+.stage-btn:disabled,
+.scene-tab:disabled,
+.ghost-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .stage-btn.active,
 .scene-tab.active {
   background: var(--ink);
   color: white;
+}
+
+.scene-tab.locked {
+  background: rgba(255, 255, 255, 0.36);
 }
 
 .hero-panel,
@@ -256,7 +279,9 @@ button {
 }
 
 .skeleton,
-.risk-dot {
+.risk-dot,
+.pose-bone,
+.pose-landmark {
   position: absolute;
   z-index: 2;
 }
@@ -311,6 +336,39 @@ button {
   border-radius: 50%;
   background: var(--risk);
   box-shadow: 0 0 22px rgba(228, 82, 59, 0.75);
+}
+
+.risk-dot.low {
+  background: #38b7a2;
+  box-shadow: 0 0 18px rgba(56, 183, 162, 0.7);
+}
+
+.risk-dot.mid {
+  background: #f0a33e;
+  box-shadow: 0 0 18px rgba(240, 163, 62, 0.7);
+}
+
+.risk-dot.high {
+  background: var(--risk);
+}
+
+.pose-bone {
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #55e2d6, #f4df9d);
+  box-shadow: 0 0 16px rgba(85, 226, 214, 0.42);
+  transform-origin: 0 50%;
+}
+
+.pose-landmark {
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 50%;
+  background: #8ff1e9;
+  box-shadow: 0 0 12px rgba(143, 241, 233, 0.52);
 }
 
 .pulse-ring {
@@ -368,6 +426,11 @@ button {
   color: #106764;
 }
 
+.voice-btn.active {
+  background: rgba(31, 143, 139, 0.22);
+  box-shadow: 0 0 0 4px rgba(31, 143, 139, 0.08);
+}
+
 .ghost-btn:hover,
 .upload-btn:hover,
 .stage-btn:hover,
@@ -397,6 +460,17 @@ button {
   background: rgba(255, 255, 255, 0.8);
   color: var(--ink);
   resize: none;
+}
+
+.inline-error {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(228, 82, 59, 0.18);
+  border-radius: 16px;
+  background: rgba(228, 82, 59, 0.08);
+  color: #a73524;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .metrics-strip {
@@ -478,6 +552,10 @@ button {
   background: linear-gradient(90deg, #8cd6d1, #1f8f8b);
 }
 
+.bar.low {
+  background: linear-gradient(90deg, #b8e8d9, #38b7a2);
+}
+
 .grid-two {
   display: grid;
   gap: 14px;
@@ -503,6 +581,16 @@ button {
 
 .bullet-list li span {
   color: var(--muted);
+}
+
+.bullet-list.compact li {
+  padding: 12px 14px;
+}
+
+.agent-answer {
+  margin: 14px 0 0;
+  color: var(--ink);
+  line-height: 1.6;
 }
 
 .medical-note {
