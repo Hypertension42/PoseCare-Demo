@@ -252,6 +252,10 @@ button {
   object-fit: cover;
 }
 
+.pose-video.live {
+  transform: scaleX(-1);
+}
+
 .pose-photo,
 .pose-overlay {
   border-radius: 22px;
@@ -401,6 +405,7 @@ button {
   justify-content: space-between;
   gap: 10px;
   margin-top: 14px;
+  flex-wrap: wrap;
 }
 
 .upload-btn,
@@ -417,6 +422,17 @@ button {
   font-weight: 700;
 }
 
+.camera-btn,
+.camera-capture-btn {
+  min-width: 0;
+}
+
+.camera-btn.active,
+.camera-capture-btn {
+  background: rgba(31, 143, 139, 0.12);
+  color: #106764;
+}
+
 .upload-btn input {
   display: none;
 }
@@ -429,6 +445,11 @@ button {
 .voice-btn.active {
   background: rgba(31, 143, 139, 0.22);
   box-shadow: 0 0 0 4px rgba(31, 143, 139, 0.08);
+}
+
+.camera-capture-btn:disabled {
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--muted);
 }
 
 .ghost-btn:hover,
@@ -473,6 +494,13 @@ button {
   line-height: 1.5;
 }
 
+.capture-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .metrics-strip {
   justify-content: space-between;
   margin-top: 16px;
@@ -498,6 +526,10 @@ button {
   display: block;
   margin-top: 4px;
   font-size: 16px;
+}
+
+.pose-canvas {
+  display: none;
 }
 
 .card-section,

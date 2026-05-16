@@ -1,10 +1,11 @@
-import { ChangeEvent, startTransition, useMemo, useRef, useState } from "react";
+import { ChangeEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 
 import { detectPoseLandmarks } from "./pose/poseLandmarker";
 import { analyzeSittingPosture } from "./pose/postureRules";
 import type { LandmarkPoint, PostureAnalysis } from "./pose/types";
 
 type Stage = "capture" | "analyzing" | "result" | "report";
+type CaptureSource = "sample" | "upload" | "camera";
 type SpeechRecognitionEventLike = {
   results: {
     [index: number]: {
@@ -99,26 +100,119 @@ export default function App() {
   const [stage, setStage] = useState<Stage>("capture");
   const [question, setQuestion] = useState(defaultQuestion);
   const [previewUrl, setPreviewUrl] = useState(sampleImageUrl);
+  const [captureSource, setCaptureSource] = useState<CaptureSource>("sample");
   const [analysis, setAnalysis] = useState<PostureAnalysis | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isModelReady, setIsModelReady] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isRequestingCamera, setIsRequestingCamera] = useState(false);
   const [speechSupported] = useState(() => {
     const speechWindow = window as WindowWithSpeech;
     return Boolean(speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition);
   });
   const latestBlobUrl = useRef<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const landmarks = analysis?.landmarks ?? [];
   const visiblePoints = useMemo(() => visibleLandmarks(landmarks), [landmarks]);
   const canShowResult = stage === "result" || stage === "report";
 
-  async function runAnalysis() {
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = cameraStreamRef.current;
+
+    if (!video || !stream || !isCameraOpen) {
+      if (video && !isCameraOpen) {
+        video.srcObject = null;
+      }
+      return;
+    }
+
+    video.srcObject = stream;
+    void video.play().catch(() => {
+      setAnalysisError("摄像头预览启动失败，请重试或改用上传图片。");
+      closeCamera();
+    });
+  }, [isCameraOpen]);
+
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+
+      if (latestBlobUrl.current) {
+        URL.revokeObjectURL(latestBlobUrl.current);
+      }
+    };
+  }, []);
+
+  function stopCameraStream() {
+    const stream = cameraStreamRef.current;
+    if (!stream) {
+      return;
+    }
+
+    stream.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }
+
+  function closeCamera() {
+    stopCameraStream();
+    setIsCameraOpen(false);
+    setIsRequestingCamera(false);
+  }
+
+  async function openCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setAnalysisError("当前浏览器不支持摄像头调用，请改用上传图片。");
+      return;
+    }
+
+    setAnalysisError(null);
+    setIsRequestingCamera(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 1080 },
+          height: { ideal: 1440 },
+        },
+        audio: false,
+      });
+
+      stopCameraStream();
+      cameraStreamRef.current = stream;
+      setIsCameraOpen(true);
+      setCaptureSource("camera");
+      setAnalysis(null);
+      startTransition(() => {
+        setStage("capture");
+      });
+    } catch (error) {
+      setAnalysisError(
+        error instanceof Error
+          ? "无法打开摄像头，请检查浏览器权限或改用上传图片。"
+          : "无法打开摄像头，请稍后重试。",
+      );
+      closeCamera();
+    } finally {
+      setIsRequestingCamera(false);
+    }
+  }
+
+  async function runAnalysisForSource(sourceUrl: string) {
     setStage("analyzing");
     setAnalysisError(null);
 
     try {
-      const image = await loadImage(previewUrl);
+      const image = await loadImage(sourceUrl);
       const detectedLandmarks = await detectPoseLandmarks(image);
       setIsModelReady(true);
 
@@ -149,6 +243,47 @@ export default function App() {
     }
   }
 
+  function captureFrameFromCamera() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (!video || !canvas || video.videoWidth === 0 || video.videoHeight === 0) {
+      throw new Error("摄像头画面还没准备好，请稍等一下再拍照。");
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("无法获取拍照画布，请刷新页面重试。");
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }
+
+  async function captureAndAnalyze() {
+    try {
+      const capturedPreview = captureFrameFromCamera();
+      closeCamera();
+      setPreviewUrl(capturedPreview);
+      setCaptureSource("camera");
+      await runAnalysisForSource(capturedPreview);
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : "拍照失败，请重试。");
+    }
+  }
+
+  async function runAnalysis() {
+    if (isCameraOpen) {
+      await captureAndAnalyze();
+      return;
+    }
+
+    await runAnalysisForSource(previewUrl);
+  }
+
   function goToNextStage() {
     if (stage === "capture") {
       void runAnalysis();
@@ -170,12 +305,15 @@ export default function App() {
   }
 
   function handleSampleFrame() {
+    closeCamera();
+
     if (latestBlobUrl.current) {
       URL.revokeObjectURL(latestBlobUrl.current);
       latestBlobUrl.current = null;
     }
 
     setPreviewUrl(sampleImageUrl);
+    setCaptureSource("sample");
     setQuestion(defaultQuestion);
     setAnalysis(null);
     setAnalysisError(null);
@@ -190,6 +328,8 @@ export default function App() {
       return;
     }
 
+    closeCamera();
+
     if (latestBlobUrl.current) {
       URL.revokeObjectURL(latestBlobUrl.current);
     }
@@ -197,6 +337,7 @@ export default function App() {
     const nextUrl = URL.createObjectURL(file);
     latestBlobUrl.current = nextUrl;
     setPreviewUrl(nextUrl);
+    setCaptureSource("upload");
     setAnalysis(null);
     setAnalysisError(null);
     startTransition(() => {
@@ -238,19 +379,30 @@ export default function App() {
 
   const currentSubtitle =
     stage === "capture"
-      ? "上传一张清晰坐姿图，AI 会读取人体关键点，再回答你的姿势问题。"
+      ? isCameraOpen
+        ? "对准上半身和骨盆，点击拍照后沿用当前单图分析链路完成坐姿评估。"
+        : "上传一张清晰坐姿图，或直接打开摄像头拍照，AI 会读取人体关键点再回答你的姿势问题。"
       : stage === "analyzing"
         ? "正在加载姿态模型并检测人体关键点，随后用坐姿规则生成风险结果。"
         : analysis?.summary ?? "请先完成一次坐姿图片分析。";
 
   const ctaText =
     stage === "capture"
-      ? "开始真实分析"
+      ? isCameraOpen
+        ? "拍照并分析"
+        : "开始真实分析"
       : stage === "analyzing"
         ? "识别中"
         : stage === "result"
           ? "生成体检卡"
           : "重新检测";
+
+  const captureSourceLabel =
+    captureSource === "camera"
+      ? "摄像头拍照"
+      : captureSource === "upload"
+        ? "上传图片"
+        : "样例图";
 
   return (
     <main className="app-shell">
@@ -285,7 +437,18 @@ export default function App() {
               <div className="scan-stage" data-stage={stage}>
                 <div className="scan-grid" />
                 <div className="pose-card">
-                  <img className="pose-photo" src={previewUrl} alt="姿势检测画面" />
+                  {isCameraOpen ? (
+                    <video
+                      ref={videoRef}
+                      className="pose-photo pose-video live"
+                      aria-label="摄像头实时预览"
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                  ) : (
+                    <img className="pose-photo" src={previewUrl} alt="姿势检测画面" />
+                  )}
                   <div className="pose-overlay" aria-hidden="true">
                     {poseConnections.map(([fromIndex, toIndex]) => {
                       const from = landmarks[fromIndex];
@@ -335,7 +498,9 @@ export default function App() {
                     })}
                   </div>
                   <div className="scan-badge">
-                    {stage === "analyzing"
+                    {isCameraOpen && stage === "capture"
+                      ? "camera live"
+                      : stage === "analyzing"
                       ? "detecting landmarks"
                       : analysis
                         ? `${analysis.detectedKeypoints} keypoints`
@@ -349,7 +514,13 @@ export default function App() {
 
               <div className="visual-caption">
                 <span>{isModelReady ? "模型已加载" : "模型待加载"}</span>
-                <strong>{analysis ? `${analysis.riskLevel} / ${analysis.score} 分` : "久坐姿势 / 单图分析"}</strong>
+                <strong>
+                  {isCameraOpen
+                    ? "摄像头预览 / 准备拍照"
+                    : analysis
+                      ? `${analysis.riskLevel} / ${analysis.score} 分`
+                      : "久坐姿势 / 单图分析"}
+                </strong>
               </div>
             </div>
 
@@ -373,6 +544,25 @@ export default function App() {
                 </div>
 
                 <div className="tool-row">
+                  <button
+                    type="button"
+                    className={isCameraOpen ? "ghost-btn camera-btn active" : "ghost-btn camera-btn"}
+                    onClick={isCameraOpen ? closeCamera : () => void openCamera()}
+                    disabled={isRequestingCamera || stage === "analyzing"}
+                  >
+                    {isRequestingCamera ? "连接中" : isCameraOpen ? "关闭摄像头" : "打开摄像头"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn camera-capture-btn"
+                    onClick={() => void captureAndAnalyze()}
+                    disabled={!isCameraOpen || stage === "analyzing"}
+                  >
+                    拍照分析
+                  </button>
+                </div>
+
+                <div className="tool-row">
                   <label className="upload-btn">
                     上传图片
                     <input accept="image/*" type="file" onChange={handleUploadChange} />
@@ -389,6 +579,10 @@ export default function App() {
                     {speechSupported ? (isListening ? "正在听" : "语音提问") : "语音不可用"}
                   </button>
                 </div>
+
+                <p className="capture-note">
+                  摄像头版先做单次拍照分析，连续视频识别会放到后续版本。
+                </p>
 
                 <label className="question-box">
                   <span>提问</span>
@@ -411,14 +605,20 @@ export default function App() {
             <strong>久坐姿势</strong>
           </div>
           <div className="metric-chip">
+            <span>输入</span>
+            <strong>{captureSourceLabel}</strong>
+          </div>
+          <div className="metric-chip">
             <span>关键点</span>
-            <strong>{analysis ? analysis.detectedKeypoints : "--"}</strong>
+            <strong>{analysis ? analysis.detectedKeypoints : isCameraOpen ? "live" : "--"}</strong>
           </div>
           <div className="metric-chip">
             <span>置信度</span>
             <strong>{analysis ? `${analysis.confidence}%` : "--"}</strong>
           </div>
         </section>
+
+        <canvas ref={canvasRef} className="pose-canvas" aria-hidden="true" />
 
         {canShowResult && analysis && (
           <>
