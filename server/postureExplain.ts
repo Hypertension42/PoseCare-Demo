@@ -1,6 +1,6 @@
-import { getOpenAIClient, postureExplainModel } from "./openai";
-import { postureExplainSchema } from "./postureExplainSchema";
-import type { PostureExplainRequest, PostureExplainResponse } from "./types";
+import { getOpenAIClient, postureExplainModel } from "./openai.js";
+import { postureExplainSchema } from "./postureExplainSchema.js";
+import type { PostureExplainRequest, PostureExplainResponse } from "./types.js";
 
 export function getPostureHealth() {
   return {

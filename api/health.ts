@@ -1,4 +1,4 @@
-import { getPostureHealth } from "../server/postureExplain";
+import { getPostureHealth } from "../server/postureExplain.js";
 
 type JsonResponse = {
   status: (code: number) => JsonResponse;

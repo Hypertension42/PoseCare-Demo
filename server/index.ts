@@ -6,8 +6,8 @@ import {
   generatePostureExplanation,
   getPostureHealth,
   isPostureExplainRequest,
-} from "./postureExplain";
-import type { PostureExplainRequest } from "./types";
+} from "./postureExplain.js";
+import type { PostureExplainRequest } from "./types.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);

@@ -1,5 +1,5 @@
-import { generatePostureExplanation, isPostureExplainRequest } from "../server/postureExplain";
-import type { PostureExplainRequest } from "../server/types";
+import { generatePostureExplanation, isPostureExplainRequest } from "../server/postureExplain.js";
+import type { PostureExplainRequest } from "../server/types.js";
 
 type JsonRequest = {
   method?: string;
