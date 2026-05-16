@@ -81,7 +81,7 @@ function riskLabel(level: PostureAnalysis["riskLevel"]): PostureAnalysis["riskLa
   return "Low Risk";
 }
 
-function buildGuidance(question: string, level: PostureAnalysis["riskLevel"], findings: Finding[]): Guidance {
+export function buildGuidance(question: string, level: PostureAnalysis["riskLevel"], findings: Finding[]): Guidance {
   const normalizedQuestion = question.trim();
   const topFindings = findings.slice(0, 2).map((item) => `${item.part}${item.issue}`).join("、");
   const asksAdjustment = /怎么|如何|调整|改善|纠正|建议/.test(normalizedQuestion);
@@ -242,4 +242,3 @@ export function analyzeSittingPosture(landmarks: LandmarkPoint[], question: stri
     summary: `${level}，本次根据 ${visibleKeypoints} 个可见关键点完成颈部、肩线和腰背评估。`,
   };
 }
-

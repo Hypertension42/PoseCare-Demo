@@ -27,6 +27,15 @@ export type Guidance = {
   suggestions: string[];
 };
 
+export type AIExplanation = {
+  title: string;
+  summary: string;
+  explanation: string;
+  suggestions: string[];
+  medicalBoundary: string;
+  followUpQuestion?: string;
+};
+
 export type PostureAnalysis = {
   landmarks: LandmarkPoint[];
   detectedKeypoints: number;
@@ -37,6 +46,6 @@ export type PostureAnalysis = {
   riskPoints: RiskPoint[];
   findings: Finding[];
   guidance: Guidance;
+  aiExplanation?: AIExplanation;
   summary: string;
 };
-

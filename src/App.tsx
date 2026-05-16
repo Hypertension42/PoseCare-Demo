@@ -1,8 +1,8 @@
 import { ChangeEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 
 import { detectPoseLandmarks } from "./pose/poseLandmarker";
-import { analyzeSittingPosture } from "./pose/postureRules";
-import type { LandmarkPoint, PostureAnalysis } from "./pose/types";
+import { analyzeSittingPosture, buildGuidance } from "./pose/postureRules";
+import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types";
 
 type Stage = "capture" | "analyzing" | "result" | "report";
 type CaptureSource = "sample" | "upload" | "camera";
@@ -103,6 +103,7 @@ export default function App() {
   const [captureSource, setCaptureSource] = useState<CaptureSource>("sample");
   const [analysis, setAnalysis] = useState<PostureAnalysis | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<"idle" | "loading" | "success" | "fallback">("idle");
   const [isModelReady, setIsModelReady] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -210,6 +211,7 @@ export default function App() {
   async function runAnalysisForSource(sourceUrl: string) {
     setStage("analyzing");
     setAnalysisError(null);
+    setAiStatus("idle");
 
     try {
       const image = await loadImage(sourceUrl);
@@ -232,8 +234,51 @@ export default function App() {
         return;
       }
 
+      const nextGuidance = buildGuidance(question, nextAnalysis.riskLevel, nextAnalysis.findings);
+      let aiExplanation: AIExplanation | undefined;
+      let nextAiStatus: "success" | "fallback" = "fallback";
+
+      try {
+        const explainResponse = await fetch("/api/posture-explain", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            question,
+            riskLevel: nextAnalysis.riskLevel,
+            score: nextAnalysis.score,
+            confidence: nextAnalysis.confidence,
+            detectedKeypoints: nextAnalysis.detectedKeypoints,
+            findings: nextAnalysis.findings,
+            riskPoints: nextAnalysis.riskPoints,
+            summary: nextAnalysis.summary,
+          }),
+        });
+
+        if (explainResponse.ok) {
+          aiExplanation = (await explainResponse.json()) as AIExplanation;
+          nextAiStatus = "success";
+        }
+      } catch {
+        nextAiStatus = "fallback";
+      }
+
+      const finalAnalysis: PostureAnalysis = {
+        ...nextAnalysis,
+        guidance: aiExplanation
+          ? {
+              title: aiExplanation.title,
+              answer: aiExplanation.explanation,
+              suggestions: aiExplanation.suggestions,
+            }
+          : nextGuidance,
+        aiExplanation,
+      };
+
       startTransition(() => {
-        setAnalysis(nextAnalysis);
+        setAnalysis(finalAnalysis);
+        setAiStatus(nextAiStatus);
         setStage("result");
       });
     } catch (error) {
@@ -403,6 +448,15 @@ export default function App() {
       : captureSource === "upload"
         ? "上传图片"
         : "样例图";
+
+  const explanationModeLabel =
+    aiStatus === "success"
+      ? "AI解释"
+      : aiStatus === "fallback"
+        ? "本地解释"
+        : stage === "analyzing"
+          ? "生成中"
+          : "--";
 
   return (
     <main className="app-shell">
@@ -616,6 +670,10 @@ export default function App() {
             <span>置信度</span>
             <strong>{analysis ? `${analysis.confidence}%` : "--"}</strong>
           </div>
+          <div className="metric-chip">
+            <span>解释来源</span>
+            <strong>{explanationModeLabel}</strong>
+          </div>
         </section>
 
         <canvas ref={canvasRef} className="pose-canvas" aria-hidden="true" />
@@ -667,7 +725,7 @@ export default function App() {
               <article className="info-card">
                 <div className="section-head">
                   <h3>{analysis.guidance.title}</h3>
-                  <span>问题驱动</span>
+                  <span>{aiStatus === "success" ? "AI生成" : "本地兜底"}</span>
                 </div>
                 <p className="agent-answer">{analysis.guidance.answer}</p>
                 <ul className="bullet-list compact">
@@ -683,7 +741,8 @@ export default function App() {
             <section className="medical-note">
               <h3>医学边界提示</h3>
               <p>
-                本结果用于姿势风险筛查与健康提醒，不替代医生诊断。若疼痛持续、麻木加重或存在外伤，请及时就医。
+                {analysis.aiExplanation?.medicalBoundary ??
+                  "本结果用于姿势风险筛查与健康提醒，不替代医生诊断。若疼痛持续、麻木加重或存在外伤，请及时就医。"}
               </p>
             </section>
           </>
