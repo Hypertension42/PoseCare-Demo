@@ -1,12 +1,13 @@
-import { getOpenAIClient, postureExplainModel } from "./openai.js";
-import { postureExplainSchema } from "./postureExplainSchema.js";
+import { aiBaseUrl, aiProvider, getAIClient, postureExplainModel } from "./openai.js";
 import type { PostureExplainRequest, PostureExplainResponse } from "./types.js";
 
 export function getPostureHealth() {
   return {
     ok: true,
+    provider: aiProvider,
     model: postureExplainModel,
-    hasApiKey: Boolean(process.env.OPENAI_API_KEY),
+    baseUrl: aiBaseUrl,
+    hasApiKey: Boolean(process.env.AI_API_KEY),
   };
 }
 
@@ -15,41 +16,26 @@ export function isPostureExplainRequest(body: Partial<PostureExplainRequest>): b
 }
 
 export async function generatePostureExplanation(body: PostureExplainRequest): Promise<PostureExplainResponse> {
-  const client = getOpenAIClient();
-  const result = await client.responses.create({
+  const client = getAIClient();
+  const result = await client.chat.completions.create({
     model: postureExplainModel,
-    input: [
+    messages: [
       {
         role: "system",
-        content: [
-          {
-            type: "input_text",
-            text:
-              "You are a posture risk explanation assistant for a consumer health demo. Explain the posture result in Chinese. Do not diagnose disease. Give practical, short, safe guidance based on the structured posture data only.",
-          },
-        ],
+        content:
+          "You are a posture risk explanation assistant for a consumer health demo. Explain the posture result in Chinese. Do not diagnose disease. Give practical, short, safe guidance based on the structured posture data only. Return valid JSON only with these keys: title, summary, explanation, suggestions, medicalBoundary, followUpQuestion. suggestions must be an array of 3 to 4 strings. followUpQuestion can be null.",
       },
       {
         role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: JSON.stringify(body, null, 2),
-          },
-        ],
+        content: JSON.stringify(body, null, 2),
       },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "posture_report",
-        strict: true,
-        schema: postureExplainSchema,
-      },
+    response_format: {
+      type: "json_object",
     },
   });
 
-  const output = result.output_text;
+  const output = result.choices[0]?.message.content;
   if (!output) {
     throw new Error("Empty AI response");
   }

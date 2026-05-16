@@ -2,16 +2,19 @@ import OpenAI from "openai";
 
 let client: OpenAI | null = null;
 
-export function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY;
+export const aiProvider = process.env.AI_PROVIDER ?? "deepseek";
+export const aiBaseUrl = process.env.AI_BASE_URL ?? "https://api.deepseek.com";
+export const postureExplainModel = process.env.AI_MODEL ?? "deepseek-v4-flash";
 
+export function getAIClient() {
+  const apiKey = process.env.AI_API_KEY;
   if (!apiKey) {
-    throw new Error("Missing OPENAI_API_KEY");
+    throw new Error("Missing AI_API_KEY");
   }
 
-  client ??= new OpenAI({ apiKey });
+  client ??= new OpenAI({
+    apiKey,
+    baseURL: aiBaseUrl,
+  });
   return client;
 }
-
-export const postureExplainModel = process.env.OPENAI_POSTURE_MODEL ?? "gpt-5.4-nano";
-

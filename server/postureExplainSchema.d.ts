@@ -23,8 +23,8 @@ export declare const postureExplainSchema: {
             readonly type: "string";
         };
         readonly followUpQuestion: {
-            readonly type: "string";
+            readonly type: readonly ["string", "null"];
         };
     };
-    readonly required: readonly ["title", "summary", "explanation", "suggestions", "medicalBoundary"];
+    readonly required: readonly ["title", "summary", "explanation", "suggestions", "medicalBoundary", "followUpQuestion"];
 };
