@@ -43,6 +43,30 @@ OPENAI_POSTURE_MODEL=gpt-5.4-nano
 npm run build
 ```
 
+## 部署到 Vercel
+
+本项目已经适配 Vercel：
+
+- 前端：Vite 构建到 `dist/`
+- 后端：`api/health.ts` 和 `api/posture-explain.ts` 作为 Vercel Serverless Functions
+
+在 Vercel 新建项目时选择该 GitHub 仓库，保持默认 Vite 配置即可：
+
+```bash
+Build Command: npm run build
+Output Directory: dist
+Install Command: npm install
+```
+
+然后在 Vercel Project Settings -> Environment Variables 配置：
+
+```bash
+OPENAI_API_KEY=your_key_here
+OPENAI_POSTURE_MODEL=gpt-5.4-nano
+```
+
+部署后可以访问 `/api/health` 检查服务端环境变量是否生效。
+
 ## 架构文档
 
 详细架构见：
