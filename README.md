@@ -153,13 +153,13 @@ npm run dev
 如需配置后端 AI 文案接口，可参考 `.env.example` 创建 `.env`：
 
 ```bash
-AI_PROVIDER=deepseek
-AI_API_KEY=your_key_here
-AI_BASE_URL=https://api.deepseek.com
-AI_MODEL=deepseek-v4-flash
+AI_PROVIDER=openai
+AI_API_KEY=your_openai_api_key_here
+AI_BASE_URL=https://api.openai.com/v1
+AI_MODEL=gpt-4o-mini
 ```
 
-> 当前体态人格主流程不依赖后端 AI key；AI 配置主要用于后续扩展服务端文案生成能力。
+> 模块 1 的「看图生成体态人格」需要支持视觉输入的模型。当前推荐使用 `gpt-4o-mini`，它会接收压缩后的图片和浏览器端姿态指标，动态生成体态人格、小手账和状态卡。模块 2 的姿势问诊镜也复用同一套 AI 配置生成中文解释。
 
 ## 构建
 
