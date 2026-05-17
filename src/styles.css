@@ -93,6 +93,7 @@ button {
 
 .topbar,
 .stage-switcher,
+.module-switcher,
 .tool-row,
 .bottom-bar,
 .keyword-row,
@@ -391,6 +392,7 @@ button {
 }
 
 .stage-btn,
+.module-switcher button,
 .ghost-btn,
 .upload-btn,
 .primary-btn {
@@ -421,6 +423,42 @@ button {
 .stage-btn:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.module-switcher {
+  width: min(100%, 760px);
+  gap: 12px;
+  margin: 0 auto 28px;
+  padding: 8px;
+  border-radius: 999px;
+  background: #f4f8f9;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.1);
+}
+
+.module-switcher button {
+  flex: 1 1 0;
+  min-height: 58px;
+  padding: 8px 18px;
+  background: transparent;
+  color: #64748b;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.module-switcher button span {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.module-switcher button.active {
+  background: white;
+  color: #0f172a;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.05);
 }
 
 .workspace-grid {
@@ -768,10 +806,210 @@ button {
     #f4f8f9;
 }
 
+.posture-empty-state {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(229, 161, 245, 0.48), transparent 34%),
+    radial-gradient(circle at 100% 0%, rgba(248, 172, 160, 0.55), transparent 35%),
+    #f4f8f9;
+}
+
 .empty-state h2 {
   font-size: clamp(32px, 6vw, 58px);
   line-height: 0.96;
   letter-spacing: -0.06em;
+}
+
+.posture-report-card {
+  min-height: 360px;
+  padding: 24px;
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 86% 8%, rgba(248, 172, 160, 0.44), transparent 34%),
+    linear-gradient(145deg, #0f172a, #475569);
+  color: white;
+}
+
+.posture-score-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.posture-score-head span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.posture-score-head strong {
+  font-size: clamp(72px, 12vw, 118px);
+  line-height: 0.78;
+  letter-spacing: -0.09em;
+}
+
+.posture-report-card h2 {
+  margin: 36px 0 10px;
+  font-size: clamp(34px, 6vw, 60px);
+  line-height: 0.95;
+  letter-spacing: -0.06em;
+}
+
+.posture-report-card p {
+  max-width: 620px;
+  color: rgba(255, 255, 255, 0.74);
+  line-height: 1.7;
+}
+
+.risk-point-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.risk-point {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.risk-point span,
+.risk-point em {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.risk-point strong {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.risk-point.tone-high {
+  background: rgba(242, 132, 130, 0.22);
+}
+
+.risk-point.tone-mid {
+  background: rgba(245, 195, 68, 0.2);
+}
+
+.risk-point.tone-low {
+  background: rgba(107, 191, 122, 0.2);
+}
+
+.posture-consult-section {
+  display: grid;
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.posture-question-card,
+.posture-answer-card,
+.posture-findings-card {
+  padding: 22px;
+  border-radius: 20px;
+  background: #f4f8f9;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.1);
+}
+
+.posture-question-card {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(249, 237, 150, 0.62), rgba(229, 161, 245, 0.18) 38%, #f4f8f9 68%),
+    #f4f8f9;
+}
+
+.posture-question-card h2,
+.posture-answer-card h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: clamp(30px, 5vw, 46px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.posture-question-card p,
+.posture-answer-card p,
+.posture-findings-card p,
+.posture-answer-card small {
+  color: #64748b;
+  line-height: 1.7;
+}
+
+.posture-question-row {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.posture-question-row input {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 16px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.9);
+  color: #0f172a;
+}
+
+.posture-question-row input:focus {
+  border-color: rgba(181, 103, 194, 0.5);
+  box-shadow: 0 0 0 4px rgba(181, 103, 194, 0.1);
+}
+
+.posture-result-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.posture-answer-card {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(245, 195, 68, 0.45), transparent 34%),
+    #f4f8f9;
+}
+
+.posture-answer-card .bullet-list li,
+.posture-findings-card .finding-list div {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.posture-answer-card small {
+  display: block;
+  margin-top: 14px;
+  font-size: 12px;
+}
+
+.finding-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.finding-list div {
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.finding-list span {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(242, 132, 130, 0.14);
+  color: #9f3f46;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.finding-list strong {
+  display: block;
+  color: #1e293b;
 }
 
 .status-grid {
@@ -1330,6 +1568,16 @@ button {
     grid-template-columns: repeat(3, 1fr);
   }
 
+  .posture-question-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .posture-result-grid {
+    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+    align-items: stretch;
+  }
+
   .capture-card {
     position: sticky;
     top: 18px;
@@ -1357,5 +1605,16 @@ button {
     font-size: 12px;
     line-height: 1.6;
     opacity: 0.85;
+  }
+}
+
+@media (max-width: 620px) {
+  .module-switcher {
+    flex-direction: column;
+    border-radius: 24px;
+  }
+
+  .risk-point-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -3,9 +3,11 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 
 import { analyzeBodyPersona, type BodyPersonaResult } from "./pose/bodyPersona";
 import { detectPoseLandmarks } from "./pose/poseLandmarker";
-import type { LandmarkPoint } from "./pose/types";
+import { analyzeSittingPosture } from "./pose/postureRules";
+import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types";
 
 type Stage = "capture" | "persona" | "journal" | "community";
+type ModuleView = "persona" | "posture";
 
 const sampleImageUrl = "/sample-posture.svg";
 const IMAGES = [
@@ -107,6 +109,11 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [view, setView] = useState<"hero" | "content">("hero");
+  const [moduleView, setModuleView] = useState<ModuleView>("persona");
+  const [postureQuestion, setPostureQuestion] = useState("我这个坐姿哪里不对？");
+  const [postureAnalysis, setPostureAnalysis] = useState<PostureAnalysis | null>(null);
+  const [postureAiError, setPostureAiError] = useState<string | null>(null);
+  const [isPostureAiLoading, setIsPostureAiLoading] = useState(false);
   const latestBlobUrl = useRef<string | null>(null);
 
   const landmarks = result?.landmarks ?? [];
@@ -138,6 +145,7 @@ export default function App() {
   async function runAnalysisForSource(sourceUrl: string) {
     setStage("capture");
     setAnalysisError(null);
+    setPostureAiError(null);
     setIsAnalyzing(true);
 
     try {
@@ -146,27 +154,85 @@ export default function App() {
 
       if (detectedLandmarks.length === 0) {
         setResult(null);
+        setPostureAnalysis(null);
         setAnalysisError("没有识别到完整人体姿态。请上传清晰、单人、尽量露出全身的照片。");
         return;
       }
 
       const nextResult = analyzeBodyPersona(detectedLandmarks);
+      const nextPostureAnalysis = analyzeSittingPosture(detectedLandmarks, postureQuestion);
       if (!nextResult) {
         setResult(null);
+        setPostureAnalysis(nextPostureAnalysis);
         setAnalysisError("关键点不足。请让头部、肩膀、骨盆和腿部都进入画面。");
         return;
       }
 
       startTransition(() => {
         setResult(nextResult);
+        setPostureAnalysis(nextPostureAnalysis);
         setStage("persona");
       });
+
+      if (nextPostureAnalysis) {
+        void requestPostureExplanation(nextPostureAnalysis);
+      }
     } catch (error) {
       setResult(null);
+      setPostureAnalysis(null);
       setAnalysisError(error instanceof Error ? error.message : "体态识别失败，请稍后重试。");
     } finally {
       setIsAnalyzing(false);
     }
+  }
+
+  async function requestPostureExplanation(analysis: PostureAnalysis) {
+    setIsPostureAiLoading(true);
+    setPostureAiError(null);
+
+    try {
+      const response = await fetch("/api/posture-explain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: postureQuestion,
+          riskLevel: analysis.riskLevel,
+          score: analysis.score,
+          confidence: analysis.confidence,
+          detectedKeypoints: analysis.detectedKeypoints,
+          findings: analysis.findings,
+          riskPoints: analysis.riskPoints,
+          summary: analysis.summary,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("AI 姿势解释接口暂不可用，已显示本地规则建议。");
+      }
+
+      const aiExplanation = (await response.json()) as AIExplanation;
+      setPostureAnalysis((current) => (current ? { ...current, aiExplanation } : current));
+    } catch (error) {
+      setPostureAiError(error instanceof Error ? error.message : "AI 姿势解释失败，已显示本地规则建议。");
+    } finally {
+      setIsPostureAiLoading(false);
+    }
+  }
+
+  function handlePostureQuestionSubmit() {
+    if (!postureAnalysis) {
+      void runAnalysisForSource(previewUrl);
+      return;
+    }
+
+    const nextAnalysis = analyzeSittingPosture(postureAnalysis.landmarks, postureQuestion);
+    if (!nextAnalysis) {
+      setPostureAiError("关键点不足，无法生成坐姿问诊结果。");
+      return;
+    }
+
+    setPostureAnalysis(nextAnalysis);
+    void requestPostureExplanation(nextAnalysis);
   }
 
   function handlePhotoInputChange(event: ChangeEvent<HTMLInputElement>) {
@@ -181,6 +247,7 @@ export default function App() {
     latestBlobUrl.current = nextUrl;
     setPreviewUrl(nextUrl);
     setResult(null);
+    setPostureAnalysis(null);
     setAnalysisError(null);
     setStage("capture");
     event.target.value = "";
@@ -190,6 +257,7 @@ export default function App() {
   function handleSampleFrame() {
     setPreviewUrl(sampleImageUrl);
     setResult(null);
+    setPostureAnalysis(null);
     setAnalysisError(null);
     setStage("capture");
   }
@@ -327,15 +395,49 @@ export default function App() {
         <section className="hero-panel">
             <div className="hero-copy">
               <p className="eyebrow">拍一张照，生成你的专属体态人格。</p>
-              <h2>先识别你的体态风格，再展开拍照、穿搭和放松指南。</h2>
-              <p>体态人格是核心身份，小手账是它下面的生活方式分支。产品不做身材评判，只把身体线索翻译成更适合你的表达方式。</p>
+              <h2>两个模块：体态人格负责表达，姿势问诊镜负责解释。</h2>
+              <p>同一张照片会生成专属体态人格，也可以进入坐姿问诊，查看颈部、肩线和腰背的风险解释。</p>
             </div>
         </section>
 
+        <nav className="module-switcher" aria-label="功能模块">
+          <button type="button" className={moduleView === "persona" ? "active" : ""} onClick={() => setModuleView("persona")}>
+            <span>模块 01</span>
+            专属体态人格
+          </button>
+          <button type="button" className={moduleView === "posture" ? "active" : ""} onClick={() => setModuleView("posture")}>
+            <span>模块 02</span>
+            姿势问诊镜 Beta
+          </button>
+        </nav>
+
         <section className="content-shell" id="capture">
           <article className="persona-card primary-persona-card">
-            <p className="eyebrow">专属体态人格</p>
-            {result ? (
+            <p className="eyebrow">{moduleView === "persona" ? "专属体态人格" : "姿势问诊镜 Beta"}</p>
+            {moduleView === "posture" && postureAnalysis ? (
+              <div className="posture-report-card">
+                <div className="posture-score-head">
+                  <span>{postureAnalysis.riskLabel}</span>
+                  <strong>{postureAnalysis.score}</strong>
+                </div>
+                <h2>{postureAnalysis.riskLevel}</h2>
+                <p>{postureAnalysis.summary}</p>
+                <div className="risk-point-grid">
+                  {postureAnalysis.riskPoints.map((point) => (
+                    <div key={point.label} className={`risk-point tone-${point.tone}`}>
+                      <span>{point.label}</span>
+                      <strong>{point.value}</strong>
+                      <em>{point.detail}</em>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : moduleView === "posture" ? (
+              <div className="empty-state posture-empty-state">
+                <h2>上传一张坐姿照片。</h2>
+                <p>系统会检测颈部、肩线和腰背状态，并回答你的姿势问题。</p>
+              </div>
+            ) : result ? (
               <>
                 <div className="persona-cover">
                   <span>{result.postureId}</span>
@@ -415,6 +517,54 @@ export default function App() {
           </article>
         </section>
 
+        {moduleView === "posture" && (
+          <section className="posture-consult-section">
+            <article className="posture-question-card">
+              <p className="eyebrow">Pose Consultation</p>
+              <h2>姿势问诊镜</h2>
+              <p>输入你想问的问题，系统会基于当前照片的姿态关键点回答。AI 接口不可用时，会自动使用本地规则建议。</p>
+              <div className="posture-question-row">
+                <input value={postureQuestion} onChange={(event) => setPostureQuestion(event.target.value)} placeholder="例如：我这个坐姿哪里不对？" />
+                <button type="button" className="primary-btn" onClick={handlePostureQuestionSubmit} disabled={isAnalyzing || isPostureAiLoading}>
+                  {isPostureAiLoading ? "AI 分析中" : "开始问诊"}
+                </button>
+              </div>
+              {postureAiError && <p className="inline-error">{postureAiError}</p>}
+            </article>
+
+            {postureAnalysis && (
+              <div className="posture-result-grid">
+                <article className="posture-answer-card">
+                  <p className="eyebrow">{postureAnalysis.aiExplanation ? "AI 姿势解释" : postureAnalysis.guidance.title}</p>
+                  <h3>{postureAnalysis.aiExplanation?.title ?? postureAnalysis.guidance.title}</h3>
+                  <p>{postureAnalysis.aiExplanation?.explanation ?? postureAnalysis.guidance.answer}</p>
+                  <ul className="bullet-list compact">
+                    {(postureAnalysis.aiExplanation?.suggestions ?? postureAnalysis.guidance.suggestions).map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                  <small>{postureAnalysis.aiExplanation?.medicalBoundary ?? "本结果仅用于姿势风险筛查和生活方式建议，不能替代医生诊断。"}</small>
+                </article>
+
+                <article className="posture-findings-card">
+                  <p className="eyebrow">关键发现</p>
+                  <div className="finding-list">
+                    {postureAnalysis.findings.map((finding) => (
+                      <div key={`${finding.part}-${finding.issue}`}>
+                        <span>{finding.severity}</span>
+                        <strong>
+                          {finding.part}：{finding.issue}
+                        </strong>
+                        <p>{finding.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </div>
+            )}
+          </section>
+        )}
+
         {result && (
           <>
             <section className="privacy-note">
@@ -424,7 +574,7 @@ export default function App() {
           </>
         )}
 
-        {result && (
+        {moduleView === "persona" && result && (
           <>
             <section className="guide-section">
               <div className="guide-header">
