@@ -2,7 +2,7 @@ import { ChangeEvent, startTransition, useEffect, useRef, useState } from "react
 import { ArrowLeft, ArrowRight } from "lucide-react";
 
 import { analyzeBodyPersona, type BodyPersonaResult } from "./pose/bodyPersona";
-import { detectPoseLandmarks } from "./pose/poseLandmarker";
+import { detectPoseLandmarks, detectPoseLandmarksFromVideo } from "./pose/poseLandmarker";
 import { analyzeSittingPosture } from "./pose/postureRules";
 import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types";
 
@@ -114,9 +114,17 @@ export default function App() {
   const [postureAnalysis, setPostureAnalysis] = useState<PostureAnalysis | null>(null);
   const [postureAiError, setPostureAiError] = useState<string | null>(null);
   const [isPostureAiLoading, setIsPostureAiLoading] = useState(false);
+  const [isLiveCameraActive, setIsLiveCameraActive] = useState(false);
+  const [isLiveAnalyzing, setIsLiveAnalyzing] = useState(false);
   const latestBlobUrl = useRef<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const liveTimerRef = useRef<number | null>(null);
+  const liveBusyRef = useRef(false);
+  const liveSignatureRef = useRef("");
+  const liveExplainStampRef = useRef(0);
 
-  const landmarks = result?.landmarks ?? [];
+  const landmarks = moduleView === "posture" ? postureAnalysis?.landmarks ?? [] : result?.landmarks ?? [];
   const visiblePoints = visibleLandmarks(landmarks);
   const currentTheme = IMAGES[activeIndex];
 
@@ -139,8 +147,46 @@ export default function App() {
       if (latestBlobUrl.current) {
         URL.revokeObjectURL(latestBlobUrl.current);
       }
+      closeLiveCamera();
     };
   }, []);
+
+  useEffect(() => {
+    if (moduleView !== "posture") {
+      closeLiveCamera();
+    }
+  }, [moduleView]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = cameraStreamRef.current;
+
+    if (!video || !stream || !isLiveCameraActive) {
+      if (video && !isLiveCameraActive) {
+        video.srcObject = null;
+      }
+      return;
+    }
+
+    video.srcObject = stream;
+    void video.play().catch(() => {
+      setAnalysisError("摄像头预览启动失败，请改用上传坐姿照。");
+      closeLiveCamera();
+    });
+  }, [isLiveCameraActive]);
+
+  useEffect(() => {
+    if (!isLiveCameraActive || moduleView !== "posture") {
+      stopLiveTimer();
+      return;
+    }
+
+    liveTimerRef.current = window.setInterval(() => {
+      void analyzeLiveVideoFrame();
+    }, 900);
+
+    return stopLiveTimer;
+  }, [isLiveCameraActive, moduleView, postureQuestion]);
 
   async function runAnalysisForSource(sourceUrl: string) {
     setStage("capture");
@@ -216,6 +262,98 @@ export default function App() {
       setPostureAiError(error instanceof Error ? error.message : "AI 姿势解释失败，已显示本地规则建议。");
     } finally {
       setIsPostureAiLoading(false);
+    }
+  }
+
+  function stopLiveTimer() {
+    if (liveTimerRef.current !== null) {
+      window.clearInterval(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    liveBusyRef.current = false;
+    setIsLiveAnalyzing(false);
+  }
+
+  function closeLiveCamera() {
+    stopLiveTimer();
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    liveSignatureRef.current = "";
+    liveExplainStampRef.current = 0;
+    setIsLiveCameraActive(false);
+  }
+
+  async function openLiveCamera() {
+    setModuleView("posture");
+    setAnalysisError(null);
+    setPostureAiError(null);
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setAnalysisError("当前浏览器不支持直接打开摄像头，请改用上传坐姿照。");
+      return;
+    }
+
+    try {
+      closeLiveCamera();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 960 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      cameraStreamRef.current = stream;
+      liveSignatureRef.current = "";
+      liveExplainStampRef.current = 0;
+      setIsLiveCameraActive(true);
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? `摄像头打开失败：${error.message}` : "摄像头打开失败，请检查浏览器权限。");
+    }
+  }
+
+  async function analyzeLiveVideoFrame() {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0 || liveBusyRef.current) {
+      return;
+    }
+
+    liveBusyRef.current = true;
+    setIsLiveAnalyzing(true);
+
+    try {
+      const detectedLandmarks = await detectPoseLandmarksFromVideo(video, performance.now());
+      if (detectedLandmarks.length === 0) {
+        setAnalysisError("实时检测中暂时没有识别到完整人体，请坐到画面中央并露出头部、肩膀和骨盆。");
+        return;
+      }
+
+      const nextAnalysis = analyzeSittingPosture(detectedLandmarks, postureQuestion);
+      if (!nextAnalysis) {
+        setAnalysisError("实时关键点不足，请调整摄像头角度后重试。");
+        return;
+      }
+
+      setAnalysisError(null);
+      setPostureAnalysis((current) => ({
+        ...nextAnalysis,
+        aiExplanation: current?.aiExplanation,
+      }));
+
+      const scoreBucket = Math.round(nextAnalysis.score / 5) * 5;
+      const signature = `${nextAnalysis.riskLevel}:${scoreBucket}:${nextAnalysis.findings.map((finding) => `${finding.part}-${finding.issue}`).join("|")}`;
+      const now = Date.now();
+      if (signature !== liveSignatureRef.current && now - liveExplainStampRef.current > 5000) {
+        liveSignatureRef.current = signature;
+        liveExplainStampRef.current = now;
+        void requestPostureExplanation(nextAnalysis);
+      }
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : "实时姿势识别失败，请稍后重试。");
+    } finally {
+      liveBusyRef.current = false;
+      setIsLiveAnalyzing(false);
     }
   }
 
@@ -473,7 +611,11 @@ export default function App() {
             <div className="scan-stage" data-stage={stage}>
               <div className="scan-grid" />
               <div className="pose-card">
-                <img className="pose-photo" src={previewUrl} alt="体态识别画面" />
+                {moduleView === "posture" && isLiveCameraActive ? (
+                  <video ref={videoRef} className="pose-photo pose-video" playsInline muted autoPlay />
+                ) : (
+                  <img className="pose-photo" src={previewUrl} alt="体态识别画面" />
+                )}
                 <div className="pose-overlay" aria-hidden="true">
                   {poseConnections.map(([fromIndex, toIndex]) => {
                     const from = landmarks[fromIndex];
@@ -489,7 +631,11 @@ export default function App() {
                 </div>
                 <div className="scan-badge">
                   {moduleView === "posture"
-                    ? postureAnalysis
+                    ? isLiveCameraActive
+                      ? isLiveAnalyzing
+                        ? "live analyzing"
+                        : "live camera"
+                      : postureAnalysis
                       ? `${postureAnalysis.detectedKeypoints} keypoints`
                       : "sitting photo"
                     : result
@@ -503,6 +649,11 @@ export default function App() {
 
             <div className="capture-tools">
               <div className="tool-row">
+                {moduleView === "posture" && (
+                  <button type="button" className={`ghost-btn live-camera-btn ${isLiveCameraActive ? "active" : ""}`} onClick={isLiveCameraActive ? closeLiveCamera : () => void openLiveCamera()}>
+                    {isLiveCameraActive ? "关闭实时检测" : "打开摄像头实时检测"}
+                  </button>
+                )}
                 <label className="upload-btn camera-shot-btn">
                   现场拍一张照
                   <input accept="image/*" capture="environment" type="file" onChange={handlePhotoInputChange} />
@@ -522,7 +673,7 @@ export default function App() {
               </button>
               <p className="capture-note">
                 {moduleView === "posture"
-                  ? "姿势问诊镜会先用浏览器姿态关键点计算颈部、肩线和腰背风险；AI 不可用时使用本地规则兜底。"
+                  ? "姿势问诊镜支持摄像头实时检测：浏览器实时识别关键点并更新风险；只有风险状态稳定变化时，才把结构化结果交给大模型解释。"
                   : "v0 默认不上传原始照片到大模型；当前用浏览器姿态关键点生成体态人格。后续可把结构化指标交给 DeepSeek 做文案增强。"}
               </p>
             </div>

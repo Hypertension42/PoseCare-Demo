@@ -520,6 +520,10 @@ button {
   object-fit: cover;
 }
 
+.pose-video {
+  transform: scaleX(-1);
+}
+
 .pose-overlay::before {
   content: "";
   position: absolute;
@@ -622,6 +626,16 @@ button {
   background: rgba(255, 255, 255, 0.94);
   color: #1e293b;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
+}
+
+.content-frame .live-camera-btn {
+  flex-basis: 100%;
+  background: linear-gradient(90deg, rgba(245, 195, 68, 0.2), rgba(181, 103, 194, 0.16));
+}
+
+.content-frame .live-camera-btn.active {
+  background: linear-gradient(90deg, #f5c344, #f28482, #b567c2);
+  color: white;
 }
 
 .upload-btn input {
