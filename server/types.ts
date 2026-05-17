@@ -34,3 +34,54 @@ export type PostureExplainResponse = {
   followUpQuestion?: string;
 };
 
+export type PersonaMetrics = {
+  shoulderEase: number;
+  balance: number;
+  lineFlow: number;
+  relaxation: number;
+  presence: number;
+  stability: number;
+};
+
+export type BodyPersonaGenerateRequest = {
+  imageDataUrl: string;
+  localPersona: {
+    personaName: string;
+    postureId: string;
+    description: string;
+    keywords: string[];
+    strengths: string[];
+    metrics: PersonaMetrics;
+    detectedKeypoints: number;
+    confidence: number;
+  };
+};
+
+export type BodyPersonaGenerateResponse = {
+  personaName: string;
+  description: string;
+  keywords: string[];
+  strengths: string[];
+  journal: Array<{
+    title: string;
+    subtitle: string;
+    items: string[];
+  }>;
+  dailyCard: {
+    moodName: string;
+    energy: number;
+    keywords: string[];
+    healingCopy: string;
+  };
+  weeklyCard: {
+    summary: string;
+    keywords: string[];
+    changes: Array<{ label: string; value: number }>;
+    nextSuggestion: string;
+  };
+  communityPreview: {
+    groupName: string;
+    similarity: number;
+    inspirations: string[];
+  };
+};

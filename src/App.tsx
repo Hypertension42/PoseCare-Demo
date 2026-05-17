@@ -8,6 +8,7 @@ import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types
 
 type Stage = "capture" | "persona" | "journal" | "community";
 type ModuleView = "persona" | "posture";
+type BodyPersonaAIResponse = Omit<BodyPersonaResult, "landmarks" | "detectedKeypoints" | "confidence" | "postureId" | "metrics">;
 
 const sampleImageUrl = "/sample-posture.svg";
 const IMAGES = [
@@ -41,6 +42,23 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error("图片加载失败，请换一张清晰的全身体态照片。"));
     image.src = src;
   });
+}
+
+async function imageSourceToDataUrl(sourceUrl: string) {
+  const image = await loadImage(sourceUrl);
+  const canvas = document.createElement("canvas");
+  const maxSide = 768;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("图片压缩失败，请换一张照片。");
+  }
+
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.78);
 }
 
 function visibleLandmarks(landmarks: LandmarkPoint[]) {
@@ -105,6 +123,8 @@ export default function App() {
   const [result, setResult] = useState<BodyPersonaResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isPersonaAiLoading, setIsPersonaAiLoading] = useState(false);
+  const [personaAiError, setPersonaAiError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -191,6 +211,7 @@ export default function App() {
   async function runAnalysisForSource(sourceUrl: string) {
     setStage("capture");
     setAnalysisError(null);
+    setPersonaAiError(null);
     setPostureAiError(null);
     setIsAnalyzing(true);
 
@@ -220,6 +241,10 @@ export default function App() {
         setStage("persona");
       });
 
+      if (moduleView === "persona") {
+        void requestBodyPersonaGeneration(nextResult, sourceUrl);
+      }
+
       if (nextPostureAnalysis) {
         void requestPostureExplanation(nextPostureAnalysis);
       }
@@ -229,6 +254,55 @@ export default function App() {
       setAnalysisError(error instanceof Error ? error.message : "体态识别失败，请稍后重试。");
     } finally {
       setIsAnalyzing(false);
+    }
+  }
+
+  async function requestBodyPersonaGeneration(localResult: BodyPersonaResult, sourceUrl: string) {
+    setIsPersonaAiLoading(true);
+    setPersonaAiError(null);
+
+    try {
+      const imageDataUrl = await imageSourceToDataUrl(sourceUrl);
+      const response = await fetch("/api/body-persona", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageDataUrl,
+          localPersona: {
+            personaName: localResult.personaName,
+            postureId: localResult.postureId,
+            description: localResult.description,
+            keywords: localResult.keywords,
+            strengths: localResult.strengths,
+            metrics: localResult.metrics,
+            detectedKeypoints: localResult.detectedKeypoints,
+            confidence: localResult.confidence,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("大模型体态人格生成暂不可用，已显示本地识别结果。");
+      }
+
+      const aiPersona = (await response.json()) as BodyPersonaAIResponse;
+      setResult((current) =>
+        current?.postureId === localResult.postureId
+          ? {
+              ...current,
+              ...aiPersona,
+              postureId: current.postureId,
+              metrics: current.metrics,
+              landmarks: current.landmarks,
+              detectedKeypoints: current.detectedKeypoints,
+              confidence: current.confidence,
+            }
+          : current,
+      );
+    } catch (error) {
+      setPersonaAiError(error instanceof Error ? error.message : "大模型体态人格生成失败，已显示本地识别结果。");
+    } finally {
+      setIsPersonaAiLoading(false);
     }
   }
 
@@ -527,7 +601,7 @@ export default function App() {
             <p className="eyebrow">Posture Persona / v0.0.1</p>
             <h1>专属体态人格</h1>
           </div>
-          <span className="status-pill">{result?.postureId ?? "AI 体态识别"}</span>
+          <span className="status-pill">{isPersonaAiLoading ? "AI 正在写入人格内容" : result?.postureId ?? "AI 体态识别"}</span>
         </header>
 
         <section className="hero-panel">
@@ -668,13 +742,16 @@ export default function App() {
               </div>
 
               {analysisError && <p className="inline-error">{analysisError}</p>}
+              {moduleView === "persona" && personaAiError && <p className="inline-error">{personaAiError}</p>}
               <button type="button" className="primary-btn analysis-btn" onClick={() => void runAnalysisForSource(previewUrl)} disabled={isAnalyzing}>
-                {isAnalyzing ? "正在分析" : moduleView === "posture" ? "分析坐姿风险" : "生成体态人格"}
+                {isAnalyzing ? "正在分析" : moduleView === "posture" ? "分析坐姿风险" : isPersonaAiLoading ? "AI 正在写小手账" : "生成体态人格"}
               </button>
               <p className="capture-note">
                 {moduleView === "posture"
                   ? "姿势问诊镜支持摄像头实时检测：浏览器实时识别关键点并更新风险；只有风险状态稳定变化时，才把结构化结果交给大模型解释。"
-                  : "v0 默认不上传原始照片到大模型；当前用浏览器姿态关键点生成体态人格。后续可把结构化指标交给 DeepSeek 做文案增强。"}
+                  : isPersonaAiLoading
+                    ? "已完成本地姿态识别，正在把压缩图片和结构化体态指标交给大模型生成动态人格、小手账和状态卡。"
+                    : "模块 1 会先用浏览器姿态关键点生成稳定底稿，再调用大模型结合图片动态写体态人格、小手账和状态卡。"}
               </p>
             </div>
           </article>
