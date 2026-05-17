@@ -44,7 +44,6 @@ export type PersonaMetrics = {
 };
 
 export type BodyPersonaGenerateRequest = {
-  imageDataUrl: string;
   localPersona: {
     personaName: string;
     postureId: string;
@@ -54,6 +53,23 @@ export type BodyPersonaGenerateRequest = {
     metrics: PersonaMetrics;
     detectedKeypoints: number;
     confidence: number;
+  };
+  poseSummary: {
+    keypoints: Array<{
+      name: string;
+      x: number;
+      y: number;
+      visibility?: number;
+    }>;
+    derived: {
+      shoulderTilt: number;
+      hipTilt: number;
+      shoulderWidth: number;
+      hipWidth: number;
+      torsoLean: number;
+      verticalLine: number;
+      centerOffset: number;
+    };
   };
 };
 

@@ -6,7 +6,7 @@ function isStringArray(value: unknown, minLength: number) {
 }
 
 export function isBodyPersonaGenerateRequest(body: Partial<BodyPersonaGenerateRequest>): body is BodyPersonaGenerateRequest {
-  return Boolean(body.imageDataUrl?.startsWith("data:image/") && body.localPersona?.postureId && body.localPersona?.metrics);
+  return Boolean(body.localPersona?.postureId && body.localPersona?.metrics && body.poseSummary?.keypoints && body.poseSummary?.derived);
 }
 
 export function isBodyPersonaGenerateResponse(value: Partial<BodyPersonaGenerateResponse>): value is BodyPersonaGenerateResponse {
@@ -35,31 +35,20 @@ export async function generateBodyPersona(body: BodyPersonaGenerateRequest): Pro
       {
         role: "system",
         content:
-          "你是一个温柔、审美化的体态人格生成助手。你需要根据用户全身体态照片和结构化姿态指标，生成中文体态人格、小手账、状态卡和相似体态社区预览。不要做医学诊断，不要评价身材缺陷，不要提体重、三围、肥胖、腿粗、胯宽、驼背严重、高低肩明显等焦虑词。只输出合法 JSON。",
+          "你是一个温柔、审美化的体态人格生成助手。你看不到原图，只能根据 MediaPipe 姿态关键点、归一化几何特征和本地体态指标，推断用户的身体气质。生成中文体态人格、小手账、状态卡和相似体态社区预览。不要做医学诊断，不要评价身材缺陷，不要提体重、三围、肥胖、腿粗、胯宽、驼背严重、高低肩明显等焦虑词。只输出合法 JSON。",
       },
       {
         role: "user",
-        content: [
+        content: JSON.stringify(
           {
-            type: "text",
-            text: JSON.stringify(
-              {
-                task:
-                  "请结合图片中的整体体态氛围、肩颈打开程度、重心、线条延展和本地指标，动态生成更贴合图片的体态人格内容。必须返回这些键：personaName, description, keywords, strengths, journal, dailyCard, weeklyCard, communityPreview。journal 必须包含 title 为 体态气质档案、体态穿搭推荐、拍照姿势推荐、放松运动推荐、相似体态灵感页 的项目，每项 items 3 条。dailyCard.energy 为 0-100。weeklyCard.changes 包含 松弛感、舒展度、活力感、自信感。communityPreview.similarity 为 72-96。",
-                localPersona: body.localPersona,
-              },
-              null,
-              2,
-            ),
+            task:
+              "请基于结构化体态数据动态生成更贴合该用户的体态人格内容。你不能声称看到了照片，只能说“根据体态关键点和指标”。必须返回这些键：personaName, description, keywords, strengths, journal, dailyCard, weeklyCard, communityPreview。journal 必须包含 title 为 体态气质档案、体态穿搭推荐、拍照姿势推荐、放松运动推荐、相似体态灵感页 的项目，每项 items 3 条。dailyCard.energy 为 0-100。weeklyCard.changes 包含 松弛感、舒展度、活力感、自信感。communityPreview.similarity 为 72-96。",
+            localPersona: body.localPersona,
+            poseSummary: body.poseSummary,
           },
-          {
-            type: "image_url",
-            image_url: {
-              url: body.imageDataUrl,
-              detail: "low",
-            },
-          },
-        ],
+          null,
+          2,
+        ),
       },
     ],
     response_format: {

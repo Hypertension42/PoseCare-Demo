@@ -44,25 +44,61 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-async function imageSourceToDataUrl(sourceUrl: string) {
-  const image = await loadImage(sourceUrl);
-  const canvas = document.createElement("canvas");
-  const maxSide = 768;
-  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("图片压缩失败，请换一张照片。");
-  }
-
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.78);
-}
-
 function visibleLandmarks(landmarks: LandmarkPoint[]) {
   return landmarks.filter((landmark) => (landmark.visibility ?? 0) >= 0.45);
+}
+
+const namedLandmarks = [
+  ["nose", 0],
+  ["leftShoulder", 11],
+  ["rightShoulder", 12],
+  ["leftHip", 23],
+  ["rightHip", 24],
+  ["leftKnee", 25],
+  ["rightKnee", 26],
+  ["leftAnkle", 27],
+  ["rightAnkle", 28],
+] as const;
+
+function distance(a: LandmarkPoint, b: LandmarkPoint) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function buildPoseSummary(landmarks: LandmarkPoint[]) {
+  const keypoints = namedLandmarks
+    .map(([name, index]) => {
+      const point = landmarks[index];
+      if (!point) return null;
+      return {
+        name,
+        x: Number(point.x.toFixed(4)),
+        y: Number(point.y.toFixed(4)),
+        visibility: point.visibility === undefined ? undefined : Number(point.visibility.toFixed(3)),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  const leftShoulder = landmarks[11];
+  const rightShoulder = landmarks[12];
+  const leftHip = landmarks[23];
+  const rightHip = landmarks[24];
+  const nose = landmarks[0];
+  const shoulderCenter = leftShoulder && rightShoulder ? { x: (leftShoulder.x + rightShoulder.x) / 2, y: (leftShoulder.y + rightShoulder.y) / 2 } : null;
+  const hipCenter = leftHip && rightHip ? { x: (leftHip.x + rightHip.x) / 2, y: (leftHip.y + rightHip.y) / 2 } : null;
+
+  return {
+    keypoints,
+    derived: {
+      shoulderTilt: Number((leftShoulder && rightShoulder ? Math.abs(leftShoulder.y - rightShoulder.y) : 0).toFixed(4)),
+      hipTilt: Number((leftHip && rightHip ? Math.abs(leftHip.y - rightHip.y) : 0).toFixed(4)),
+      shoulderWidth: Number((leftShoulder && rightShoulder ? distance(leftShoulder, rightShoulder) : 0).toFixed(4)),
+      hipWidth: Number((leftHip && rightHip ? distance(leftHip, rightHip) : 0).toFixed(4)),
+      torsoLean: Number((shoulderCenter && hipCenter ? Math.abs(shoulderCenter.x - hipCenter.x) : 0).toFixed(4)),
+      verticalLine: Number((shoulderCenter && hipCenter ? Math.abs(hipCenter.y - shoulderCenter.y) : 0).toFixed(4)),
+      centerOffset: Number((shoulderCenter ? shoulderCenter.x - 0.5 : 0).toFixed(4)),
+      headOffset: Number((nose && shoulderCenter ? nose.x - shoulderCenter.x : 0).toFixed(4)),
+    },
+  };
 }
 
 function buildConnectionStyle(from: LandmarkPoint, to: LandmarkPoint) {
@@ -242,7 +278,7 @@ export default function App() {
       });
 
       if (moduleView === "persona") {
-        void requestBodyPersonaGeneration(nextResult, sourceUrl);
+        void requestBodyPersonaGeneration(nextResult);
       }
 
       if (nextPostureAnalysis) {
@@ -257,17 +293,15 @@ export default function App() {
     }
   }
 
-  async function requestBodyPersonaGeneration(localResult: BodyPersonaResult, sourceUrl: string) {
+  async function requestBodyPersonaGeneration(localResult: BodyPersonaResult) {
     setIsPersonaAiLoading(true);
     setPersonaAiError(null);
 
     try {
-      const imageDataUrl = await imageSourceToDataUrl(sourceUrl);
       const response = await fetch("/api/body-persona", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageDataUrl,
           localPersona: {
             personaName: localResult.personaName,
             postureId: localResult.postureId,
@@ -278,6 +312,7 @@ export default function App() {
             detectedKeypoints: localResult.detectedKeypoints,
             confidence: localResult.confidence,
           },
+          poseSummary: buildPoseSummary(localResult.landmarks),
         }),
       });
 
@@ -750,8 +785,8 @@ export default function App() {
                 {moduleView === "posture"
                   ? "姿势问诊镜支持摄像头实时检测：浏览器实时识别关键点并更新风险；只有风险状态稳定变化时，才把结构化结果交给大模型解释。"
                   : isPersonaAiLoading
-                    ? "已完成本地姿态识别，正在把压缩图片和结构化体态指标交给大模型生成动态人格、小手账和状态卡。"
-                    : "模块 1 会先用浏览器姿态关键点生成稳定底稿，再调用大模型结合图片动态写体态人格、小手账和状态卡。"}
+                    ? "已完成本地姿态识别，正在把体态关键点、几何特征和本地指标交给 DeepSeek 生成动态人格、小手账和状态卡。"
+                    : "模块 1 会先用浏览器姿态关键点生成稳定底稿，再调用 DeepSeek 基于结构化体态数据动态写人格、小手账和状态卡。"}
               </p>
             </div>
           </article>
