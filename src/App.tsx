@@ -1,49 +1,19 @@
-import { ChangeEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, startTransition, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 
-import { detectPoseLandmarks, detectPoseLandmarksFromVideo } from "./pose/poseLandmarker";
-import { analyzeSittingPosture, buildGuidance } from "./pose/postureRules";
-import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types";
+import { analyzeBodyPersona, type BodyPersonaResult } from "./pose/bodyPersona";
+import { detectPoseLandmarks } from "./pose/poseLandmarker";
+import type { LandmarkPoint } from "./pose/types";
 
-type Stage = "capture" | "analyzing" | "result" | "report";
-type CaptureSource = "sample" | "upload" | "camera";
-type CameraMode = "still" | "live";
-type SpeechRecognitionEventLike = {
-  results: {
-    [index: number]: {
-      [index: number]: {
-        transcript: string;
-      };
-    };
-  };
-};
-type SpeechRecognitionLike = {
-  lang: string;
-  interimResults: boolean;
-  maxAlternatives: number;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-};
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-type WindowWithSpeech = Window &
-  typeof globalThis & {
-    SpeechRecognition?: SpeechRecognitionConstructor;
-    webkitSpeechRecognition?: SpeechRecognitionConstructor;
-  };
+type Stage = "capture" | "persona" | "journal" | "community";
 
-const stageOrder: Stage[] = ["capture", "analyzing", "result", "report"];
-
-const defaultQuestion = "我这个坐姿哪里不对？";
 const sampleImageUrl = "/sample-posture.svg";
-
-const stageTitle: Record<Stage, string> = {
-  capture: "Capture",
-  analyzing: "Analyzing",
-  result: "Result",
-  report: "ReportCard",
-};
-
+const IMAGES = [
+  { src: "https://fifth-gentle-45902158.figma.site/_components/v2/4de492f6d9cf8244ad5293233e5c6f52407d42fc/1.02464a56.png", bg: "#F4845F", panel: "#F79B7F" },
+  { src: "https://fifth-gentle-45902158.figma.site/_components/v2/4de492f6d9cf8244ad5293233e5c6f52407d42fc/2.b977faab.png", bg: "#6BBF7A", panel: "#85CC92" },
+  { src: "https://fifth-gentle-45902158.figma.site/_components/v2/4de492f6d9cf8244ad5293233e5c6f52407d42fc/3.4df853b4.png", bg: "#E882B4", panel: "#ED9DC4" },
+  { src: "https://fifth-gentle-45902158.figma.site/_components/v2/4de492f6d9cf8244ad5293233e5c6f52407d42fc/4.4457fbce.png", bg: "#6EB5FF", panel: "#8DC4FF" },
+] as const;
 const poseConnections: Array<[number, number]> = [
   [0, 11],
   [0, 12],
@@ -66,17 +36,13 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     const image = new Image();
     image.crossOrigin = "anonymous";
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("图片加载失败，请换一张清晰的单人坐姿图。"));
+    image.onerror = () => reject(new Error("图片加载失败，请换一张清晰的全身体态照片。"));
     image.src = src;
   });
 }
 
 function visibleLandmarks(landmarks: LandmarkPoint[]) {
   return landmarks.filter((landmark) => (landmark.visibility ?? 0) >= 0.45);
-}
-
-function connectionKey([from, to]: [number, number]) {
-  return `${from}-${to}`;
 }
 
 function buildConnectionStyle(from: LandmarkPoint, to: LandmarkPoint) {
@@ -97,476 +63,115 @@ function buildConnectionStyle(from: LandmarkPoint, to: LandmarkPoint) {
   };
 }
 
+function metricEntries(result: BodyPersonaResult) {
+  return [
+    ["肩颈舒展", result.metrics.shoulderEase],
+    ["重心平衡", result.metrics.balance],
+    ["线条延展", result.metrics.lineFlow],
+    ["松弛感", result.metrics.relaxation],
+    ["气质外放", result.metrics.presence],
+    ["站姿稳定", result.metrics.stability],
+  ] as const;
+}
+
+function journalGuides(result: BodyPersonaResult) {
+  return result.journal.filter((section) => ["体态穿搭推荐", "拍照姿势推荐", "放松运动推荐"].includes(section.title));
+}
+
+function guideByTitle(result: BodyPersonaResult, title: string) {
+  return journalGuides(result).find((section) => section.title === title);
+}
+
+function weeklyMoodCurve(result: BodyPersonaResult) {
+  const today = result.dailyCard.energy;
+  const relaxationDelta = result.weeklyCard.changes.find((item) => item.label === "松弛感")?.value ?? 8;
+  const stretchDelta = result.weeklyCard.changes.find((item) => item.label === "舒展度")?.value ?? 6;
+  const start = Math.max(42, today - relaxationDelta - Math.round(stretchDelta / 2));
+  const labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+  return labels.map((label, index) => {
+    const progress = index / (labels.length - 1);
+    const wave = Math.sin(index * 1.15) * 4;
+    const value = Math.round(start + (today - start) * progress + wave);
+    return { label, value: Math.min(96, Math.max(35, value)) };
+  });
+}
+
 export default function App() {
   const [stage, setStage] = useState<Stage>("capture");
-  const [question, setQuestion] = useState(defaultQuestion);
   const [previewUrl, setPreviewUrl] = useState(sampleImageUrl);
-  const [captureSource, setCaptureSource] = useState<CaptureSource>("sample");
-  const [cameraMode, setCameraMode] = useState<CameraMode>("live");
-  const [analysis, setAnalysis] = useState<PostureAnalysis | null>(null);
+  const [result, setResult] = useState<BodyPersonaResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [aiStatus, setAiStatus] = useState<"idle" | "loading" | "success" | "fallback">("idle");
-  const [isModelReady, setIsModelReady] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
-  const [isRequestingCamera, setIsRequestingCamera] = useState(false);
-  const [isLiveAnalyzing, setIsLiveAnalyzing] = useState(false);
-  const [isLiveRecognitionActive, setIsLiveRecognitionActive] = useState(false);
-  const [speechSupported] = useState(() => {
-    const speechWindow = window as WindowWithSpeech;
-    return Boolean(speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition);
-  });
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [view, setView] = useState<"hero" | "content">("hero");
   const latestBlobUrl = useRef<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-  const liveTickRef = useRef<number | null>(null);
-  const liveBusyRef = useRef(false);
-  const liveAnalysisSignatureRef = useRef<string>("");
-  const liveExplainStampRef = useRef(0);
-  const liveStableSignatureRef = useRef<string>("");
-  const liveStableCountRef = useRef(0);
-  const liveMissCountRef = useRef(0);
 
-  const landmarks = analysis?.landmarks ?? [];
-  const visiblePoints = useMemo(() => visibleLandmarks(landmarks), [landmarks]);
-  const canShowResult = stage === "result" || stage === "report";
+  const landmarks = result?.landmarks ?? [];
+  const visiblePoints = visibleLandmarks(landmarks);
+  const currentTheme = IMAGES[activeIndex];
 
   useEffect(() => {
-    const video = videoRef.current;
-    const stream = cameraStreamRef.current;
-
-    if (!video || !stream || !isCameraOpen) {
-      if (video && !isCameraOpen) {
-        video.srcObject = null;
-      }
-      return;
-    }
-
-    video.srcObject = stream;
-    void video.play().catch(() => {
-      setAnalysisError("摄像头预览启动失败，请重试或改用上传图片。");
-      closeCamera();
+    IMAGES.forEach((item) => {
+      const image = new Image();
+      image.src = item.src;
     });
-  }, [isCameraOpen]);
+  }, []);
 
   useEffect(() => {
-    if (!isCameraOpen || cameraMode !== "live" || !isLiveRecognitionActive) {
-      if (liveTickRef.current !== null) {
-        window.clearInterval(liveTickRef.current);
-        liveTickRef.current = null;
-      }
-      setIsLiveAnalyzing(false);
-      liveBusyRef.current = false;
-      return;
-    }
-
-    const runLiveFrame = async () => {
-      const video = videoRef.current;
-      if (!video || video.videoWidth === 0 || video.videoHeight === 0 || liveBusyRef.current) {
-        return;
-      }
-
-      liveBusyRef.current = true;
-      setIsLiveAnalyzing(true);
-      setAnalysisError(null);
-
-      try {
-        const detectedLandmarks = await detectPoseLandmarksFromVideo(video, performance.now());
-        setIsModelReady(true);
-
-        if (detectedLandmarks.length === 0) {
-          liveMissCountRef.current += 1;
-          if (liveMissCountRef.current >= 2) {
-            liveStableSignatureRef.current = "";
-            liveStableCountRef.current = 0;
-            liveAnalysisSignatureRef.current = "";
-            startTransition(() => {
-              setAnalysis(null);
-              setAiStatus("idle");
-              setAnalysisError("连续识别中暂时没有检测到完整人体，请回到画面中央并露出上半身和骨盆。");
-              setStage("capture");
-            });
-          }
-          return;
-        }
-
-        const nextAnalysis = analyzeSittingPosture(detectedLandmarks, question);
-        if (!nextAnalysis) {
-          return;
-        }
-        liveMissCountRef.current = 0;
-
-        const signature = [
-          nextAnalysis.riskLevel,
-          nextAnalysis.score,
-          nextAnalysis.findings.map((item) => `${item.part}:${item.issue}:${item.severity}`).join("|"),
-        ].join("::");
-
-        if (signature !== liveStableSignatureRef.current) {
-          liveStableSignatureRef.current = signature;
-          liveStableCountRef.current = 1;
-          return;
-        }
-
-        liveStableCountRef.current += 1;
-        if (liveStableCountRef.current < 2) {
-          return;
-        }
-
-        if (signature === liveAnalysisSignatureRef.current) {
-          return;
-        }
-
-        liveAnalysisSignatureRef.current = signature;
-
-        const nextGuidance = buildGuidance(question, nextAnalysis.riskLevel, nextAnalysis.findings);
-        const nextAnalysisState: PostureAnalysis = {
-          ...nextAnalysis,
-          guidance: analysis?.aiExplanation
-            ? {
-                title: analysis.aiExplanation.title,
-                answer: analysis.aiExplanation.explanation,
-                suggestions: analysis.aiExplanation.suggestions,
-              }
-            : nextGuidance,
-          aiExplanation: analysis?.aiExplanation,
-        };
-
-        startTransition(() => {
-          setAnalysis(nextAnalysisState);
-          setAiStatus((current) => (current === "success" ? "success" : "loading"));
-          setStage("result");
-        });
-
-        const now = Date.now();
-        if (now - liveExplainStampRef.current < 4500) {
-          return;
-        }
-        liveExplainStampRef.current = now;
-
-        try {
-          const explainResponse = await fetch("/api/posture-explain", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              question,
-              riskLevel: nextAnalysis.riskLevel,
-              score: nextAnalysis.score,
-              confidence: nextAnalysis.confidence,
-              detectedKeypoints: nextAnalysis.detectedKeypoints,
-              findings: nextAnalysis.findings,
-              riskPoints: nextAnalysis.riskPoints,
-              summary: nextAnalysis.summary,
-            }),
-          });
-
-          if (!explainResponse.ok) {
-            throw new Error("AI解释暂时不可用");
-          }
-
-          const aiExplanation = (await explainResponse.json()) as AIExplanation;
-          startTransition(() => {
-            setAnalysis((current) =>
-              current
-                ? {
-                    ...current,
-                    guidance: {
-                      title: aiExplanation.title,
-                      answer: aiExplanation.explanation,
-                      suggestions: aiExplanation.suggestions,
-                    },
-                    aiExplanation,
-                  }
-                : current,
-            );
-            setAiStatus("success");
-          });
-        } catch {
-          startTransition(() => {
-            setAiStatus("fallback");
-          });
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          setAnalysisError(error.message);
-        }
-      } finally {
-        liveBusyRef.current = false;
-        setIsLiveAnalyzing(false);
-      }
-    };
-
-    liveTickRef.current = window.setInterval(() => {
-      void runLiveFrame();
-    }, 1200);
-
-    void runLiveFrame();
-
-    return () => {
-      if (liveTickRef.current !== null) {
-        window.clearInterval(liveTickRef.current);
-        liveTickRef.current = null;
-      }
-      liveBusyRef.current = false;
-      setIsLiveAnalyzing(false);
-    };
-  }, [analysis?.aiExplanation, cameraMode, isCameraOpen, isLiveRecognitionActive, question]);
+    const updateMobile = () => setIsMobile(window.innerWidth < 640);
+    updateMobile();
+    window.addEventListener("resize", updateMobile);
+    return () => window.removeEventListener("resize", updateMobile);
+  }, []);
 
   useEffect(() => {
     return () => {
-      stopCameraStream();
-
       if (latestBlobUrl.current) {
         URL.revokeObjectURL(latestBlobUrl.current);
       }
     };
   }, []);
 
-  function stopCameraStream() {
-    const stream = cameraStreamRef.current;
-    if (!stream) {
-      return;
-    }
-
-    stream.getTracks().forEach((track) => track.stop());
-    cameraStreamRef.current = null;
-
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-  }
-
-  function closeCamera() {
-    stopCameraStream();
-    setIsCameraOpen(false);
-    setIsRequestingCamera(false);
-    setIsLiveAnalyzing(false);
-    setIsLiveRecognitionActive(false);
-  }
-
-  async function openCamera() {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setAnalysisError("当前浏览器不支持摄像头调用，请改用上传图片。");
-      return;
-    }
-
-    setAnalysisError(null);
-    setIsRequestingCamera(true);
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 1080 },
-          height: { ideal: 1440 },
-        },
-        audio: false,
-      });
-
-      stopCameraStream();
-      cameraStreamRef.current = stream;
-      setIsCameraOpen(true);
-      setCaptureSource("camera");
-      setAnalysis(null);
-      setIsLiveRecognitionActive(cameraMode === "live");
-      liveAnalysisSignatureRef.current = "";
-      liveExplainStampRef.current = 0;
-      liveStableSignatureRef.current = "";
-      liveStableCountRef.current = 0;
-      liveMissCountRef.current = 0;
-      startTransition(() => {
-        setStage("capture");
-      });
-    } catch (error) {
-      setAnalysisError(
-        error instanceof Error
-          ? "无法打开摄像头，请检查浏览器权限或改用上传图片。"
-          : "无法打开摄像头，请稍后重试。",
-      );
-      closeCamera();
-    } finally {
-      setIsRequestingCamera(false);
-    }
-  }
-
   async function runAnalysisForSource(sourceUrl: string) {
-    setStage("analyzing");
+    setStage("capture");
     setAnalysisError(null);
-    setAiStatus("idle");
+    setIsAnalyzing(true);
 
     try {
       const image = await loadImage(sourceUrl);
       const detectedLandmarks = await detectPoseLandmarks(image);
-      setIsModelReady(true);
 
       if (detectedLandmarks.length === 0) {
-        setAnalysis(null);
-        setAnalysisError("没有识别到完整人体姿态。请上传清晰、单人、上半身和骨盆都在画面里的坐姿照片。");
-        setStage("capture");
+        setResult(null);
+        setAnalysisError("没有识别到完整人体姿态。请上传清晰、单人、尽量露出全身的照片。");
         return;
       }
 
-      const nextAnalysis = analyzeSittingPosture(detectedLandmarks, question);
-
-      if (!nextAnalysis) {
-        setAnalysis(null);
-        setAnalysisError("关键点不足，暂时无法评估颈肩腰背。请换一张人体更完整的坐姿图片。");
-        setStage("capture");
+      const nextResult = analyzeBodyPersona(detectedLandmarks);
+      if (!nextResult) {
+        setResult(null);
+        setAnalysisError("关键点不足。请让头部、肩膀、骨盆和腿部都进入画面。");
         return;
       }
 
-      const nextGuidance = buildGuidance(question, nextAnalysis.riskLevel, nextAnalysis.findings);
-      let aiExplanation: AIExplanation | undefined;
-      let nextAiStatus: "success" | "fallback" = "fallback";
-
-      try {
-        const explainResponse = await fetch("/api/posture-explain", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            question,
-            riskLevel: nextAnalysis.riskLevel,
-            score: nextAnalysis.score,
-            confidence: nextAnalysis.confidence,
-            detectedKeypoints: nextAnalysis.detectedKeypoints,
-            findings: nextAnalysis.findings,
-            riskPoints: nextAnalysis.riskPoints,
-            summary: nextAnalysis.summary,
-          }),
-        });
-
-        if (explainResponse.ok) {
-          aiExplanation = (await explainResponse.json()) as AIExplanation;
-          nextAiStatus = "success";
-        }
-      } catch {
-        nextAiStatus = "fallback";
-      }
-
-      const finalAnalysis: PostureAnalysis = {
-        ...nextAnalysis,
-        guidance: aiExplanation
-          ? {
-              title: aiExplanation.title,
-              answer: aiExplanation.explanation,
-              suggestions: aiExplanation.suggestions,
-            }
-          : nextGuidance,
-        aiExplanation,
-      };
-
       startTransition(() => {
-        setAnalysis(finalAnalysis);
-        setAiStatus(nextAiStatus);
-        setStage("result");
+        setResult(nextResult);
+        setStage("persona");
       });
     } catch (error) {
-      setAnalysis(null);
-      setAnalysisError(error instanceof Error ? error.message : "姿态识别失败，请稍后重试。");
-      setStage("capture");
+      setResult(null);
+      setAnalysisError(error instanceof Error ? error.message : "体态识别失败，请稍后重试。");
+    } finally {
+      setIsAnalyzing(false);
     }
   }
 
-  function captureFrameFromCamera() {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-
-    if (!video || !canvas || video.videoWidth === 0 || video.videoHeight === 0) {
-      throw new Error("摄像头画面还没准备好，请稍等一下再拍照。");
-    }
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("无法获取拍照画布，请刷新页面重试。");
-    }
-
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.92);
-  }
-
-  async function captureAndAnalyze() {
-    try {
-      const capturedPreview = captureFrameFromCamera();
-      setPreviewUrl(capturedPreview);
-      setCaptureSource("camera");
-      if (cameraMode === "still") {
-        closeCamera();
-      }
-      await runAnalysisForSource(capturedPreview);
-    } catch (error) {
-      setAnalysisError(error instanceof Error ? error.message : "拍照失败，请重试。");
-    }
-  }
-
-  async function runAnalysis() {
-    if (isCameraOpen && cameraMode === "live") {
-      setIsLiveRecognitionActive((current) => !current);
-      return;
-    }
-
-    if (isCameraOpen && cameraMode === "still") {
-      await captureAndAnalyze();
-      return;
-    }
-
-    await runAnalysisForSource(previewUrl);
-  }
-
-  function goToNextStage() {
-    if (stage === "capture") {
-      void runAnalysis();
-      return;
-    }
-
-    if (stage === "result") {
-      startTransition(() => {
-        setStage("report");
-      });
-      return;
-    }
-
-    if (stage === "report") {
-      startTransition(() => {
-        setStage("capture");
-      });
-    }
-  }
-
-  function handleSampleFrame() {
-    closeCamera();
-    setCameraMode("live");
-
-    if (latestBlobUrl.current) {
-      URL.revokeObjectURL(latestBlobUrl.current);
-      latestBlobUrl.current = null;
-    }
-
-    setPreviewUrl(sampleImageUrl);
-    setCaptureSource("sample");
-    setQuestion(defaultQuestion);
-    setAnalysis(null);
-    setAnalysisError(null);
-    startTransition(() => {
-      setStage("capture");
-    });
-  }
-
-  function handleUploadChange(event: ChangeEvent<HTMLInputElement>) {
+  function handlePhotoInputChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    closeCamera();
-    setCameraMode("live");
+    if (!file) return;
 
     if (latestBlobUrl.current) {
       URL.revokeObjectURL(latestBlobUrl.current);
@@ -575,486 +180,365 @@ export default function App() {
     const nextUrl = URL.createObjectURL(file);
     latestBlobUrl.current = nextUrl;
     setPreviewUrl(nextUrl);
-    setCaptureSource("upload");
-    setAnalysis(null);
+    setResult(null);
     setAnalysisError(null);
-    startTransition(() => {
-      setStage("capture");
-    });
+    setStage("capture");
+    event.target.value = "";
+    void runAnalysisForSource(nextUrl);
   }
 
-  function handleVoiceQuestion() {
-    const speechWindow = window as WindowWithSpeech;
-    const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+  function handleSampleFrame() {
+    setPreviewUrl(sampleImageUrl);
+    setResult(null);
+    setAnalysisError(null);
+    setStage("capture");
+  }
 
-    if (!Recognition) {
-      setAnalysisError("当前浏览器不支持语音识别，请直接输入问题。");
+  function navigate(direction: "next" | "prev") {
+    if (isAnimating) return;
+    setIsAnimating(true);
+    setActiveIndex((current) => (direction === "next" ? (current + 1) % IMAGES.length : (current + IMAGES.length - 1) % IMAGES.length));
+    window.setTimeout(() => setIsAnimating(false), 650);
+  }
+
+  async function shareDailyCard() {
+    if (!result) return;
+
+    const shareText = `${result.personaName}｜今日体态状态：${result.dailyCard.moodName}，状态值 ${result.dailyCard.energy}。${result.dailyCard.healingCopy}`;
+
+    if (navigator.share) {
+      await navigator.share({
+        title: "我的今日体态状态卡",
+        text: shareText,
+      });
       return;
     }
 
-    const recognition = new Recognition();
-    recognition.lang = "zh-CN";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript.trim();
-      if (transcript) {
-        setQuestion(transcript);
-        setAnalysis(null);
-      }
-    };
-    recognition.onerror = () => {
-      setAnalysisError("语音识别失败，请换文字输入。");
-    };
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    setAnalysisError(null);
-    setIsListening(true);
-    recognition.start();
+    await navigator.clipboard?.writeText(shareText);
   }
 
-  const currentSubtitle =
-    stage === "capture"
-      ? isCameraOpen
-        ? cameraMode === "live"
-          ? "开着摄像头持续识别，姿势变化会实时刷新结果。"
-          : "对准上半身和骨盆，点击拍照后沿用当前单图分析链路完成坐姿评估。"
-        : "上传一张清晰坐姿图，或直接打开摄像头拍照，AI 会读取人体关键点再回答你的姿势问题。"
-      : stage === "analyzing"
-        ? "正在加载姿态模型并检测人体关键点，随后用坐姿规则生成风险结果。"
-        : analysis?.summary ?? "请先完成一次坐姿图片分析。";
+  if (view === "hero") {
+    return (
+      <main className="app-shell has-hero">
+        <section
+          className="hero-panel hero-canvas"
+          style={{ backgroundColor: currentTheme.bg, transition: "background-color 650ms cubic-bezier(0.4,0,0.2,1)" }}
+        >
+          <div className="toonhub-hero" style={{ backgroundColor: currentTheme.bg, transition: "background-color 650ms cubic-bezier(0.4,0,0.2,1)" }}>
+            <div className="toonhub-grain" aria-hidden="true" />
+            <div className="toonhub-ghost">3D SHAPE</div>
+            <div className="toonhub-brand">TOONHUB</div>
+            <div className="toonhub-carousel">
+              {IMAGES.map((item, index) => {
+                const center = activeIndex;
+                const left = (activeIndex + IMAGES.length - 1) % IMAGES.length;
+                const right = (activeIndex + 1) % IMAGES.length;
+                const back = (activeIndex + 2) % IMAGES.length;
+                const role = index === center ? "center" : index === left ? "left" : index === right ? "right" : index === back ? "back" : "back";
+                const roleStyles = {
+                  center: {
+                    left: "50%",
+                    bottom: isMobile ? "22%" : 0,
+                    height: isMobile ? "60%" : "92%",
+                    opacity: 1,
+                    filter: "none",
+                    transform: `translateX(-50%) scale(${isMobile ? 1.25 : 1.68})`,
+                    zIndex: 20,
+                  },
+                  left: {
+                    left: isMobile ? "20%" : "30%",
+                    bottom: isMobile ? "32%" : "12%",
+                    height: isMobile ? "16%" : "28%",
+                    opacity: 0.85,
+                    filter: "blur(2px)",
+                    transform: "translateX(-50%) scale(1)",
+                    zIndex: 10,
+                  },
+                  right: {
+                    left: isMobile ? "80%" : "70%",
+                    bottom: isMobile ? "32%" : "12%",
+                    height: isMobile ? "16%" : "28%",
+                    opacity: 0.85,
+                    filter: "blur(2px)",
+                    transform: "translateX(-50%) scale(1)",
+                    zIndex: 10,
+                  },
+                  back: {
+                    left: "50%",
+                    bottom: isMobile ? "32%" : "12%",
+                    height: isMobile ? "13%" : "22%",
+                    opacity: 1,
+                    filter: "blur(4px)",
+                    transform: "translateX(-50%) scale(1)",
+                    zIndex: 5,
+                  },
+                }[role];
 
-  const ctaText =
-    stage === "capture"
-      ? isCameraOpen
-        ? cameraMode === "live"
-          ? isLiveRecognitionActive
-            ? "暂停连续识别"
-            : "开始连续识别"
-          : "拍照并分析"
-        : "开始真实分析"
-      : stage === "analyzing"
-        ? "识别中"
-        : stage === "result"
-          ? "生成体检卡"
-          : "重新检测";
-
-  const captureSourceLabel =
-    captureSource === "camera"
-      ? "摄像头拍照"
-      : captureSource === "upload"
-        ? "上传图片"
-        : "样例图";
-
-  const explanationModeLabel =
-    aiStatus === "success"
-      ? "AI解释"
-      : aiStatus === "fallback"
-        ? "本地解释"
-        : stage === "analyzing"
-          ? "生成中"
-          : "--";
-
-  const captureModeLabel = isCameraOpen
-    ? cameraMode === "live"
-      ? isLiveRecognitionActive
-        ? isLiveAnalyzing
-          ? "连续识别中"
-          : "连续识别已开启"
-        : "连续识别已暂停"
-      : "单次拍照模式"
-    : "上传 / 样例模式";
+                return (
+                  <div
+                    key={item.src}
+                    className="toonhub-item"
+                    style={{
+                      ...roleStyles,
+                      transition:
+                        "transform 650ms cubic-bezier(0.4,0,0.2,1), filter 650ms cubic-bezier(0.4,0,0.2,1), opacity 650ms cubic-bezier(0.4,0,0.2,1), left 650ms cubic-bezier(0.4,0,0.2,1)",
+                      willChange: "transform, filter, opacity",
+                    }}
+                  >
+                    <img src={item.src} alt="" draggable={false} style={{ filter: "drop-shadow(0 26px 28px rgba(0, 0, 0, 0.18))" }} />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="toonhub-bottom-left">
+              <p>TOONHUB FIGURINES</p>
+              <p className="hidden-copy">
+                The artwork is stunning, shipped fully prepared. The finish is a vision, the 3D craft is flawless. Many thanks! Wishing you the win. Order now.
+              </p>
+              <div className="toonhub-nav">
+                <button type="button" onClick={() => navigate("prev")} aria-label="previous">
+                  <ArrowLeft size={26} strokeWidth={2.25} />
+                </button>
+                <button type="button" onClick={() => navigate("next")} aria-label="next">
+                  <ArrowRight size={26} strokeWidth={2.25} />
+                </button>
+              </div>
+            </div>
+            <button type="button" className="toonhub-link" onClick={() => setView("content")}>
+              DISCOVER IT <ArrowRight size={20} strokeWidth={2.25} />
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   return (
-    <main className="app-shell">
-      <section className="phone-frame">
+    <main className="app-shell content-page">
+      <section className="product-frame content-frame">
         <header className="topbar">
           <div>
-            <p className="eyebrow">PoseCare / 视觉搜索 Demo</p>
-            <h1>姿势问诊镜</h1>
+            <p className="eyebrow">Posture Persona / v0.0.1</p>
+            <h1>专属体态人格</h1>
           </div>
-          <span className={`status-pill ${analysis ? analysis.riskPoints[0]?.tone ?? "mid" : "mid"}`}>
-            {analysis?.riskLevel ?? "待分析"}
-          </span>
+          <span className="status-pill">{result?.postureId ?? "AI 体态识别"}</span>
         </header>
 
-        <nav className="stage-switcher" aria-label="流程状态">
-          {stageOrder.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={item === stage ? "stage-btn active" : "stage-btn"}
-              onClick={() => setStage(item)}
-              disabled={item === "analyzing" || ((item === "result" || item === "report") && !analysis)}
-            >
-              {stageTitle[item]}
-            </button>
-          ))}
-        </nav>
-
         <section className="hero-panel">
-          <div className="hero-layout">
-            <div className="hero-visual">
-              <div className="scan-stage" data-stage={stage}>
-                <div className="scan-grid" />
-                <div className="pose-card">
-                  {isCameraOpen ? (
-                    <video
-                      ref={videoRef}
-                      className="pose-photo pose-video live"
-                      aria-label="摄像头实时预览"
-                      autoPlay
-                      muted
-                      playsInline
-                    />
-                  ) : (
-                    <img className="pose-photo" src={previewUrl} alt="姿势检测画面" />
-                  )}
-                  <div className="pose-overlay" aria-hidden="true">
-                    {poseConnections.map(([fromIndex, toIndex]) => {
-                      const from = landmarks[fromIndex];
-                      const to = landmarks[toIndex];
+            <div className="hero-copy">
+              <p className="eyebrow">拍一张照，生成你的专属体态人格。</p>
+              <h2>先识别你的体态风格，再展开拍照、穿搭和放松指南。</h2>
+              <p>体态人格是核心身份，小手账是它下面的生活方式分支。产品不做身材评判，只把身体线索翻译成更适合你的表达方式。</p>
+            </div>
+        </section>
 
-                      if (!from || !to || (from.visibility ?? 0) < 0.35 || (to.visibility ?? 0) < 0.35) {
-                        return null;
-                      }
-
-                      return (
-                        <span
-                          key={connectionKey([fromIndex, toIndex])}
-                          className="pose-bone"
-                          style={buildConnectionStyle(from, to)}
-                        />
-                      );
-                    })}
-
-                    {visiblePoints.map((landmark, index) => (
-                      <span
-                        key={`${index}-${landmark.x}-${landmark.y}`}
-                        className="pose-landmark"
-                        style={{ left: `${landmark.x * 100}%`, top: `${landmark.y * 100}%` }}
-                      />
+        <section className="content-shell" id="capture">
+          <article className="persona-card primary-persona-card">
+            <p className="eyebrow">专属体态人格</p>
+            {result ? (
+              <>
+                <div className="persona-cover">
+                  <span>{result.postureId}</span>
+                  <h2>{result.personaName}</h2>
+                  <p>{result.description}</p>
+                  <div className="keyword-row">
+                    {result.keywords.map((keyword) => (
+                      <strong key={keyword}>{keyword}</strong>
                     ))}
-
-                    {analysis?.riskPoints.map((item) => {
-                      const target =
-                        item.label === "颈部"
-                          ? landmarks[0]
-                          : item.label === "肩线"
-                            ? landmarks[11]
-                            : landmarks[23];
-
-                      if (!target) {
-                        return null;
-                      }
-
-                      return (
-                        <span
-                          key={item.label}
-                          className={`risk-dot ${item.tone}`}
-                          style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}
-                          title={item.detail}
-                        />
-                      );
-                    })}
-                  </div>
-                  <div className="scan-badge">
-                    {isCameraOpen && stage === "capture"
-                      ? "camera live"
-                      : stage === "analyzing"
-                      ? "detecting landmarks"
-                      : analysis
-                        ? `${analysis.detectedKeypoints} keypoints`
-                        : "upload posture image"}
                   </div>
                 </div>
-
-                <div className="pulse-ring pulse-ring-1" />
-                <div className="pulse-ring pulse-ring-2" />
-              </div>
-
-              <div className="visual-caption">
-                <span>{isModelReady ? "模型已加载" : "模型待加载"}</span>
-                <strong>
-                  {isCameraOpen
-                    ? "摄像头预览 / 准备拍照"
-                    : analysis
-                      ? `${analysis.riskLevel} / ${analysis.score} 分`
-                      : "久坐姿势 / 单图分析"}
-                </strong>
-              </div>
-            </div>
-
-            <div className="hero-side">
-              <div className="hero-copy">
-                <p className="eyebrow">{stageTitle[stage]}</p>
-                <h2>{currentSubtitle}</h2>
-                <div className="camera-mode">
-                  <span>摄像头流程</span>
-                  <strong>{captureModeLabel}</strong>
-                  <p>
-                    {cameraMode === "live"
-                      ? "连续识别已接入：保持摄像头开启，姿势变化会实时刷新。"
-                      : "单次拍照模式：拍一张，再进入完整分析。"}
-                  </p>
+                <div className="metrics-grid">
+                  {metricEntries(result).map(([label, value]) => (
+                    <div key={label} className="metric-tile">
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                      <div className="bar-wrap">
+                        <div className="bar" style={{ width: `${value}%` }} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
+              </>
+            ) : (
+              <div className="empty-state">
+                <h2>生成您的体态风格。</h2>
+                <p>上传或拍摄一张全身照，判断您的气质类型。</p>
               </div>
+            )}
+          </article>
 
-              <div className="capture-tools">
-                <div className="scene-tabs" aria-label="检测场景">
-                  <button type="button" className="scene-tab active">
-                    久坐姿势
-                  </button>
-                  <button type="button" className="scene-tab locked" disabled>
-                    站姿待支持
-                  </button>
-                  <button type="button" className="scene-tab locked" disabled>
-                    深蹲待支持
-                  </button>
-                </div>
-
-                <div className="mode-switch" aria-label="摄像头识别模式">
-                  <button
-                    type="button"
-                    className={cameraMode === "live" ? "mode-btn active" : "mode-btn"}
-                    onClick={() => {
-                      setCameraMode("live");
-                      setIsLiveRecognitionActive(true);
-                    }}
-                    disabled={!isCameraOpen}
-                  >
-                    连续识别
-                  </button>
-                  <button
-                    type="button"
-                    className={cameraMode === "still" ? "mode-btn active" : "mode-btn"}
-                    onClick={() => {
-                      setCameraMode("still");
-                      setIsLiveRecognitionActive(false);
-                    }}
-                    disabled={!isCameraOpen}
-                  >
-                    单次拍照
-                  </button>
-                </div>
-
-                <div className="tool-row">
-                  <button
-                    type="button"
-                    className={isCameraOpen ? "ghost-btn camera-btn active" : "ghost-btn camera-btn"}
-                    onClick={
-                      isCameraOpen && cameraMode === "live"
-                        ? () => setIsLiveRecognitionActive((current) => !current)
-                        : isCameraOpen
-                          ? closeCamera
-                          : () => void openCamera()
+          <article className="capture-card">
+            <div className="scan-stage" data-stage={stage}>
+              <div className="scan-grid" />
+              <div className="pose-card">
+                <img className="pose-photo" src={previewUrl} alt="体态识别画面" />
+                <div className="pose-overlay" aria-hidden="true">
+                  {poseConnections.map(([fromIndex, toIndex]) => {
+                    const from = landmarks[fromIndex];
+                    const to = landmarks[toIndex];
+                    if (!from || !to || (from.visibility ?? 0) < 0.35 || (to.visibility ?? 0) < 0.35) {
+                      return null;
                     }
-                    disabled={isRequestingCamera || stage === "analyzing"}
-                  >
-                    {isRequestingCamera
-                      ? "连接中"
-                      : isCameraOpen
-                        ? cameraMode === "live"
-                          ? isLiveRecognitionActive
-                            ? "暂停连续识别"
-                            : "开始连续识别"
-                          : "关闭摄像头"
-                        : "打开摄像头"}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-btn camera-capture-btn"
-                    onClick={() => void captureAndAnalyze()}
-                    disabled={!isCameraOpen || stage === "analyzing" || cameraMode === "live"}
-                  >
-                    拍照分析
-                  </button>
+                    return <span key={`${fromIndex}-${toIndex}`} className="pose-bone" style={buildConnectionStyle(from, to)} />;
+                  })}
+                  {visiblePoints.map((landmark, index) => (
+                    <span key={`${index}-${landmark.x}-${landmark.y}`} className="pose-landmark" style={{ left: `${landmark.x * 100}%`, top: `${landmark.y * 100}%` }} />
+                  ))}
                 </div>
-
-                <div className="tool-row">
-                  <label className="upload-btn">
-                    上传图片
-                    <input accept="image/*" type="file" onChange={handleUploadChange} />
-                  </label>
-                  <button type="button" className="ghost-btn" onClick={handleSampleFrame}>
-                    使用样例
-                  </button>
-                  <button
-                    type="button"
-                    className={isListening ? "ghost-btn voice-btn active" : "ghost-btn voice-btn"}
-                    onClick={handleVoiceQuestion}
-                    disabled={!speechSupported || isListening}
-                  >
-                    {speechSupported ? (isListening ? "正在听" : "语音提问") : "语音不可用"}
-                  </button>
-                </div>
-
-                <p className="capture-note">
-                  连续识别时会保持摄像头开启并定时刷新结果；切回拍照模式后再单次分析。
-                </p>
-
-                <label className="question-box">
-                  <span>提问</span>
-                  <textarea
-                    value={question}
-                    onChange={(event) => setQuestion(event.target.value)}
-                    rows={2}
-                  />
-                </label>
-
-                {analysisError && <p className="inline-error">{analysisError}</p>}
+                <div className="scan-badge">{result ? `${result.detectedKeypoints} keypoints` : "full-body photo"}</div>
               </div>
+              <div className="pulse-ring pulse-ring-1" />
+              <div className="pulse-ring pulse-ring-2" />
             </div>
-          </div>
+
+            <div className="capture-tools">
+              <div className="tool-row">
+                <label className="upload-btn camera-shot-btn">
+                  现场拍一张照
+                  <input accept="image/*" capture="environment" type="file" onChange={handlePhotoInputChange} />
+                </label>
+                <label className="upload-btn">
+                  上传全身照
+                  <input accept="image/*" type="file" onChange={handlePhotoInputChange} />
+                </label>
+                <button type="button" className="ghost-btn" onClick={handleSampleFrame}>
+                  使用样例
+                </button>
+              </div>
+
+              {analysisError && <p className="inline-error">{analysisError}</p>}
+              <button type="button" className="primary-btn analysis-btn" onClick={() => void runAnalysisForSource(previewUrl)} disabled={isAnalyzing}>
+                {isAnalyzing ? "正在生成" : "生成体态人格"}
+              </button>
+              <p className="capture-note">v0 默认不上传原始照片到大模型；当前用浏览器姿态关键点生成体态人格。后续可把结构化指标交给 DeepSeek 做文案增强。</p>
+            </div>
+          </article>
         </section>
 
-        <section className="metrics-strip">
-          <div className="metric-chip">
-            <span>场景</span>
-            <strong>久坐姿势</strong>
-          </div>
-          <div className="metric-chip">
-            <span>输入</span>
-            <strong>{captureSourceLabel}</strong>
-          </div>
-          <div className="metric-chip">
-            <span>关键点</span>
-            <strong>{analysis ? analysis.detectedKeypoints : isCameraOpen ? "live" : "--"}</strong>
-          </div>
-          <div className="metric-chip">
-            <span>置信度</span>
-            <strong>{analysis ? `${analysis.confidence}%` : "--"}</strong>
-          </div>
-          <div className="metric-chip">
-            <span>解释来源</span>
-            <strong>{explanationModeLabel}</strong>
-          </div>
-          <div className="metric-chip">
-            <span>摄像头模式</span>
-            <strong className={cameraMode === "live" && isCameraOpen ? "live" : undefined}>
-              {isCameraOpen ? captureModeLabel : "已关闭"}
-            </strong>
-          </div>
-        </section>
-
-        <canvas ref={canvasRef} className="pose-canvas" aria-hidden="true" />
-
-        {canShowResult && analysis && (
+        {result && (
           <>
-            <section className="card-section">
-              <div className="section-head">
-                <h3>风险概览</h3>
-                <span className={`risk-label ${analysis.riskPoints[0]?.tone ?? "mid"}`}>
-                  {analysis.riskLabel}
-                </span>
-              </div>
-
-              <div className="risk-list">
-                {analysis.riskPoints.map((item) => (
-                  <div key={item.label} className="risk-row">
-                    <div className="risk-title">
-                      <strong>{item.label}</strong>
-                      <p>{item.detail}</p>
-                    </div>
-                    <div className="bar-wrap">
-                      <div className={`bar ${item.tone}`} style={{ width: `${item.value}%` }} />
-                    </div>
-                    <span>{item.value}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="grid-two">
-              <article className="info-card">
-                <div className="section-head">
-                  <h3>发现</h3>
-                  <span>{analysis.findings.length} 条</span>
-                </div>
-                <ul className="bullet-list">
-                  {analysis.findings.map((item) => (
-                    <li key={`${item.part}-${item.issue}`}>
-                      <strong>
-                        {item.part} / {item.issue} / {item.severity}
-                      </strong>
-                      <span>{item.message}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-
-              <article className="info-card">
-                <div className="section-head">
-                  <h3>{analysis.guidance.title}</h3>
-                  <span>{aiStatus === "success" ? "AI生成" : "本地兜底"}</span>
-                </div>
-                <p className="agent-answer">{analysis.guidance.answer}</p>
-                <ul className="bullet-list compact">
-                  {analysis.guidance.suggestions.map((item) => (
-                    <li key={item}>
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-            </section>
-
-            <section className="medical-note">
-              <h3>医学边界提示</h3>
-              <p>
-                {analysis.aiExplanation?.medicalBoundary ??
-                  "本结果用于姿势风险筛查与健康提醒，不替代医生诊断。若疼痛持续、麻木加重或存在外伤，请及时就医。"}
-              </p>
+            <section className="privacy-note">
+              <strong>隐私与边界</strong>
+              <p>默认不公开原始照片，不展示体重、三围等敏感数据；社区先只做剪影和内容预览。本产品用于生活方式建议，不做医学诊断。</p>
             </section>
           </>
         )}
 
-        {stage === "report" && analysis && (
-          <section className="report-card">
-            <div className="report-card__header">
-              <div>
-                <p className="eyebrow">PoseCare ReportCard</p>
-                <h3>姿势体检卡</h3>
+        {result && (
+          <>
+            <section className="guide-section">
+              <div className="guide-header">
+                <p className="guide-badge">Persona Journal</p>
+                <h2>体态人格小手账</h2>
+                <p>
+                  围绕你的专属体态人格
+                  <br />
+                  展开三类生活方式指南
+                </p>
               </div>
-              <span className="report-score">{analysis.score} / 100</span>
-            </div>
 
-            <div className="report-layout">
-              <img className="report-photo" src={previewUrl} alt="检测画面" />
-              <div className="report-summary">
-                <p className="report-highlight">{analysis.summary}</p>
-                <ul className="report-pills">
-                  {analysis.findings.map((item) => (
-                    <li key={`${item.part}-${item.issue}`}>{item.issue}</li>
+              <div className="guide-grid">
+                <article className="guide-card guide-card-photo">
+                  <div className="guide-prompt">
+                    {guideByTitle(result, "拍照姿势推荐")?.items.map((item) => (
+                      <span key={item}>{item}</span>
+                    ))}
+                  </div>
+                  <div className="guide-pill">
+                    <strong>✦</strong>
+                    专属拍照姿势
+                  </div>
+                  <svg className="guide-cursor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 2L20 11L11 13L9 22L4 2Z" />
+                  </svg>
+                  <h3>拍照姿势推荐</h3>
+                </article>
+
+                <article className="guide-card guide-card-style">
+                  <div className="guide-style-stack">
+                    {guideByTitle(result, "体态穿搭推荐")?.items.map((item) => (
+                      <span key={item}>{item}</span>
+                    ))}
+                  </div>
+                  <h3>穿搭指南</h3>
+                </article>
+
+                <article className="guide-card guide-card-relax">
+                  <div className="guide-mesh" />
+                  <div className="guide-relax-orb">
+                    <span>3 min</span>
+                  </div>
+                  <div className="guide-search">
+                    {guideByTitle(result, "放松运动推荐")?.items[0] ?? "放松动作"}
+                  </div>
+                  <h3>放松运动指南</h3>
+                </article>
+              </div>
+            </section>
+
+            <section className="status-grid">
+              <article className="daily-card">
+                <p className="eyebrow">今日体态状态卡</p>
+                <h3>{result.dailyCard.moodName}</h3>
+                <strong>{result.dailyCard.energy}</strong>
+                <p>{result.dailyCard.healingCopy}</p>
+                <div className="keyword-row">
+                  {result.dailyCard.keywords.map((keyword) => (
+                    <span key={keyword}>{keyword}</span>
+                  ))}
+                </div>
+                <button type="button" className="share-card-btn" onClick={() => void shareDailyCard()}>
+                  一键分享
+                </button>
+              </article>
+
+              <article className="weekly-card">
+                <p className="eyebrow">本周体态状态卡</p>
+                <h3>{result.weeklyCard.summary}</h3>
+                <div className="mood-curve-card">
+                  <div className="mood-curve-head">
+                    <span>本周体态情绪变化曲线</span>
+                    <strong>{weeklyMoodCurve(result).at(-1)?.value ?? result.dailyCard.energy}</strong>
+                  </div>
+                  <div className="mood-curve-chart">
+                    {weeklyMoodCurve(result).map((point) => (
+                      <div key={point.label} className="mood-curve-day">
+                        <div className="mood-curve-track">
+                          <span style={{ height: `${point.value}%` }} />
+                        </div>
+                        <strong>{point.value}</strong>
+                        <em>{point.label}</em>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="weekly-bars">
+                  {result.weeklyCard.changes.map((item) => (
+                    <div key={item.label}>
+                      <span>{item.label}</span>
+                      <div className="bar-wrap">
+                        <div className="bar" style={{ width: `${Math.min(100, item.value * 4)}%` }} />
+                      </div>
+                      <strong>+{item.value}%</strong>
+                    </div>
+                  ))}
+                </div>
+                <p>{result.weeklyCard.nextSuggestion}</p>
+              </article>
+
+              <article className="community-card">
+                <p className="eyebrow">相似体态社区预览</p>
+                <h3>{result.communityPreview.groupName}</h3>
+                <strong>{result.communityPreview.similarity}% 相似</strong>
+                <ul className="bullet-list compact">
+                  {result.communityPreview.inspirations.map((item) => (
+                    <li key={item}>{item}</li>
                   ))}
                 </ul>
-              </div>
-            </div>
-
-            <div className="report-advice">
-              {analysis.guidance.suggestions.map((item) => (
-                <p key={item}>{item}</p>
-              ))}
-            </div>
-          </section>
+              </article>
+            </section>
+          </>
         )}
-
-        <footer className="bottom-bar">
-          <div>
-            <strong>{stageTitle[stage]}</strong>
-            <span>{stageOrder.indexOf(stage) + 1}/4</span>
-          </div>
-          <button
-            type="button"
-            className="primary-btn"
-            onClick={goToNextStage}
-            disabled={stage === "analyzing"}
-          >
-            {ctaText}
-          </button>
-        </footer>
       </section>
     </main>
   );
