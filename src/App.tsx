@@ -9,6 +9,7 @@ import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types
 type Stage = "capture" | "persona" | "journal" | "community";
 type ModuleView = "persona" | "posture";
 type BodyPersonaAIResponse = Omit<BodyPersonaResult, "landmarks" | "detectedKeypoints" | "confidence" | "postureId" | "metrics">;
+type PersonaGenerationPhase = "idle" | "detecting" | "generating" | "ready";
 
 const sampleImageUrl = "/sample-posture.svg";
 const IMAGES = [
@@ -161,6 +162,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPersonaAiLoading, setIsPersonaAiLoading] = useState(false);
   const [personaAiError, setPersonaAiError] = useState<string | null>(null);
+  const [personaGenerationPhase, setPersonaGenerationPhase] = useState<PersonaGenerationPhase>("idle");
   const [activeIndex, setActiveIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -250,6 +252,10 @@ export default function App() {
     setPersonaAiError(null);
     setPostureAiError(null);
     setIsAnalyzing(true);
+    if (moduleView === "persona") {
+      setResult(null);
+      setPersonaGenerationPhase("detecting");
+    }
 
     try {
       const image = await loadImage(sourceUrl);
@@ -272,7 +278,11 @@ export default function App() {
       }
 
       startTransition(() => {
-        setResult(nextResult);
+        if (moduleView === "persona") {
+          setPersonaGenerationPhase("generating");
+        } else {
+          setResult(nextResult);
+        }
         setPostureAnalysis(nextPostureAnalysis);
         setStage("persona");
       });
@@ -295,6 +305,7 @@ export default function App() {
 
   async function requestBodyPersonaGeneration(localResult: BodyPersonaResult) {
     setIsPersonaAiLoading(true);
+    setPersonaGenerationPhase("generating");
     setPersonaAiError(null);
 
     try {
@@ -321,21 +332,20 @@ export default function App() {
       }
 
       const aiPersona = (await response.json()) as BodyPersonaAIResponse;
-      setResult((current) =>
-        current?.postureId === localResult.postureId
-          ? {
-              ...current,
-              ...aiPersona,
-              postureId: current.postureId,
-              metrics: current.metrics,
-              landmarks: current.landmarks,
-              detectedKeypoints: current.detectedKeypoints,
-              confidence: current.confidence,
-            }
-          : current,
-      );
+      setResult({
+        ...localResult,
+        ...aiPersona,
+        postureId: localResult.postureId,
+        metrics: localResult.metrics,
+        landmarks: localResult.landmarks,
+        detectedKeypoints: localResult.detectedKeypoints,
+        confidence: localResult.confidence,
+      });
+      setPersonaGenerationPhase("ready");
     } catch (error) {
       setPersonaAiError(error instanceof Error ? error.message : "大模型体态人格生成失败，已显示本地识别结果。");
+      setResult(localResult);
+      setPersonaGenerationPhase("ready");
     } finally {
       setIsPersonaAiLoading(false);
     }
@@ -496,6 +506,8 @@ export default function App() {
     setResult(null);
     setPostureAnalysis(null);
     setAnalysisError(null);
+    setPersonaAiError(null);
+    setPersonaGenerationPhase("idle");
     setStage("capture");
     event.target.value = "";
     void runAnalysisForSource(nextUrl);
@@ -506,6 +518,8 @@ export default function App() {
     setResult(null);
     setPostureAnalysis(null);
     setAnalysisError(null);
+    setPersonaAiError(null);
+    setPersonaGenerationPhase("idle");
     setStage("capture");
   }
 
@@ -636,7 +650,7 @@ export default function App() {
             <p className="eyebrow">Posture Persona / v0.0.1</p>
             <h1>专属体态人格</h1>
           </div>
-          <span className="status-pill">{isPersonaAiLoading ? "AI 正在写入人格内容" : result?.postureId ?? "AI 体态识别"}</span>
+          <span className="status-pill">{personaGenerationPhase === "generating" ? "AI 正在生成专属人格" : result?.postureId ?? "AI 体态识别"}</span>
         </header>
 
         <section className="hero-panel">
@@ -683,6 +697,11 @@ export default function App() {
               <div className="empty-state posture-empty-state">
                 <h2>上传一张坐姿照片。</h2>
                 <p>系统会检测颈部、肩线和腰背状态，并回答你的姿势问题。</p>
+              </div>
+            ) : personaGenerationPhase === "detecting" || personaGenerationPhase === "generating" ? (
+              <div className="empty-state generating-state">
+                <h2>{personaGenerationPhase === "detecting" ? "正在识别体态关键点。" : "AI 正在生成专属体态人格。"}</h2>
+                <p>{personaGenerationPhase === "detecting" ? "系统正在读取肩颈、重心和线条数据，请稍等。" : "DeepSeek 正在根据结构化体态数据判断人格类型，并动态写入小手账推荐。"}</p>
               </div>
             ) : result ? (
               <>

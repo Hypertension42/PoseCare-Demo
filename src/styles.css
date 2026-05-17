@@ -827,6 +827,27 @@ button {
     #f4f8f9;
 }
 
+.generating-state {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(245, 195, 68, 0.62), transparent 34%),
+    radial-gradient(circle at 100% 0%, rgba(181, 103, 194, 0.46), transparent 35%),
+    #f4f8f9;
+}
+
+.generating-state::after {
+  content: "";
+  position: absolute;
+  inset: auto 28px 28px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f5c344, #f28482, #b567c2, #f5c344);
+  background-size: 220% 100%;
+  animation: loadingSlide 1.6s linear infinite;
+}
+
 .empty-state h2 {
   font-size: clamp(32px, 6vw, 58px);
   line-height: 0.96;
@@ -1536,6 +1557,16 @@ button {
   50% {
     transform: scale(1.08);
     opacity: 0.9;
+  }
+}
+
+@keyframes loadingSlide {
+  from {
+    background-position: 0% 50%;
+  }
+
+  to {
+    background-position: 220% 50%;
   }
 }
 
