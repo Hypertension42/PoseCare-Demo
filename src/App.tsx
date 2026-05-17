@@ -1,11 +1,12 @@
 import { ChangeEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 
-import { detectPoseLandmarks } from "./pose/poseLandmarker";
+import { detectPoseLandmarks, detectPoseLandmarksFromVideo } from "./pose/poseLandmarker";
 import { analyzeSittingPosture, buildGuidance } from "./pose/postureRules";
 import type { AIExplanation, LandmarkPoint, PostureAnalysis } from "./pose/types";
 
 type Stage = "capture" | "analyzing" | "result" | "report";
 type CaptureSource = "sample" | "upload" | "camera";
+type CameraMode = "still" | "live";
 type SpeechRecognitionEventLike = {
   results: {
     [index: number]: {
@@ -101,6 +102,7 @@ export default function App() {
   const [question, setQuestion] = useState(defaultQuestion);
   const [previewUrl, setPreviewUrl] = useState(sampleImageUrl);
   const [captureSource, setCaptureSource] = useState<CaptureSource>("sample");
+  const [cameraMode, setCameraMode] = useState<CameraMode>("live");
   const [analysis, setAnalysis] = useState<PostureAnalysis | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState<"idle" | "loading" | "success" | "fallback">("idle");
@@ -108,6 +110,8 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isRequestingCamera, setIsRequestingCamera] = useState(false);
+  const [isLiveAnalyzing, setIsLiveAnalyzing] = useState(false);
+  const [isLiveRecognitionActive, setIsLiveRecognitionActive] = useState(false);
   const [speechSupported] = useState(() => {
     const speechWindow = window as WindowWithSpeech;
     return Boolean(speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition);
@@ -116,6 +120,13 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
+  const liveTickRef = useRef<number | null>(null);
+  const liveBusyRef = useRef(false);
+  const liveAnalysisSignatureRef = useRef<string>("");
+  const liveExplainStampRef = useRef(0);
+  const liveStableSignatureRef = useRef<string>("");
+  const liveStableCountRef = useRef(0);
+  const liveMissCountRef = useRef(0);
 
   const landmarks = analysis?.landmarks ?? [];
   const visiblePoints = useMemo(() => visibleLandmarks(landmarks), [landmarks]);
@@ -138,6 +149,171 @@ export default function App() {
       closeCamera();
     });
   }, [isCameraOpen]);
+
+  useEffect(() => {
+    if (!isCameraOpen || cameraMode !== "live" || !isLiveRecognitionActive) {
+      if (liveTickRef.current !== null) {
+        window.clearInterval(liveTickRef.current);
+        liveTickRef.current = null;
+      }
+      setIsLiveAnalyzing(false);
+      liveBusyRef.current = false;
+      return;
+    }
+
+    const runLiveFrame = async () => {
+      const video = videoRef.current;
+      if (!video || video.videoWidth === 0 || video.videoHeight === 0 || liveBusyRef.current) {
+        return;
+      }
+
+      liveBusyRef.current = true;
+      setIsLiveAnalyzing(true);
+      setAnalysisError(null);
+
+      try {
+        const detectedLandmarks = await detectPoseLandmarksFromVideo(video, performance.now());
+        setIsModelReady(true);
+
+        if (detectedLandmarks.length === 0) {
+          liveMissCountRef.current += 1;
+          if (liveMissCountRef.current >= 2) {
+            liveStableSignatureRef.current = "";
+            liveStableCountRef.current = 0;
+            liveAnalysisSignatureRef.current = "";
+            startTransition(() => {
+              setAnalysis(null);
+              setAiStatus("idle");
+              setAnalysisError("连续识别中暂时没有检测到完整人体，请回到画面中央并露出上半身和骨盆。");
+              setStage("capture");
+            });
+          }
+          return;
+        }
+
+        const nextAnalysis = analyzeSittingPosture(detectedLandmarks, question);
+        if (!nextAnalysis) {
+          return;
+        }
+        liveMissCountRef.current = 0;
+
+        const signature = [
+          nextAnalysis.riskLevel,
+          nextAnalysis.score,
+          nextAnalysis.findings.map((item) => `${item.part}:${item.issue}:${item.severity}`).join("|"),
+        ].join("::");
+
+        if (signature !== liveStableSignatureRef.current) {
+          liveStableSignatureRef.current = signature;
+          liveStableCountRef.current = 1;
+          return;
+        }
+
+        liveStableCountRef.current += 1;
+        if (liveStableCountRef.current < 2) {
+          return;
+        }
+
+        if (signature === liveAnalysisSignatureRef.current) {
+          return;
+        }
+
+        liveAnalysisSignatureRef.current = signature;
+
+        const nextGuidance = buildGuidance(question, nextAnalysis.riskLevel, nextAnalysis.findings);
+        const nextAnalysisState: PostureAnalysis = {
+          ...nextAnalysis,
+          guidance: analysis?.aiExplanation
+            ? {
+                title: analysis.aiExplanation.title,
+                answer: analysis.aiExplanation.explanation,
+                suggestions: analysis.aiExplanation.suggestions,
+              }
+            : nextGuidance,
+          aiExplanation: analysis?.aiExplanation,
+        };
+
+        startTransition(() => {
+          setAnalysis(nextAnalysisState);
+          setAiStatus((current) => (current === "success" ? "success" : "loading"));
+          setStage("result");
+        });
+
+        const now = Date.now();
+        if (now - liveExplainStampRef.current < 4500) {
+          return;
+        }
+        liveExplainStampRef.current = now;
+
+        try {
+          const explainResponse = await fetch("/api/posture-explain", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              question,
+              riskLevel: nextAnalysis.riskLevel,
+              score: nextAnalysis.score,
+              confidence: nextAnalysis.confidence,
+              detectedKeypoints: nextAnalysis.detectedKeypoints,
+              findings: nextAnalysis.findings,
+              riskPoints: nextAnalysis.riskPoints,
+              summary: nextAnalysis.summary,
+            }),
+          });
+
+          if (!explainResponse.ok) {
+            throw new Error("AI解释暂时不可用");
+          }
+
+          const aiExplanation = (await explainResponse.json()) as AIExplanation;
+          startTransition(() => {
+            setAnalysis((current) =>
+              current
+                ? {
+                    ...current,
+                    guidance: {
+                      title: aiExplanation.title,
+                      answer: aiExplanation.explanation,
+                      suggestions: aiExplanation.suggestions,
+                    },
+                    aiExplanation,
+                  }
+                : current,
+            );
+            setAiStatus("success");
+          });
+        } catch {
+          startTransition(() => {
+            setAiStatus("fallback");
+          });
+        }
+      } catch (error) {
+        if (error instanceof Error) {
+          setAnalysisError(error.message);
+        }
+      } finally {
+        liveBusyRef.current = false;
+        setIsLiveAnalyzing(false);
+      }
+    };
+
+    liveTickRef.current = window.setInterval(() => {
+      void runLiveFrame();
+    }, 1200);
+
+    void runLiveFrame();
+
+    return () => {
+      if (liveTickRef.current !== null) {
+        window.clearInterval(liveTickRef.current);
+        liveTickRef.current = null;
+      }
+      liveBusyRef.current = false;
+      setIsLiveAnalyzing(false);
+    };
+  }, [analysis?.aiExplanation, cameraMode, isCameraOpen, isLiveRecognitionActive, question]);
 
   useEffect(() => {
     return () => {
@@ -167,6 +343,8 @@ export default function App() {
     stopCameraStream();
     setIsCameraOpen(false);
     setIsRequestingCamera(false);
+    setIsLiveAnalyzing(false);
+    setIsLiveRecognitionActive(false);
   }
 
   async function openCamera() {
@@ -193,6 +371,12 @@ export default function App() {
       setIsCameraOpen(true);
       setCaptureSource("camera");
       setAnalysis(null);
+      setIsLiveRecognitionActive(cameraMode === "live");
+      liveAnalysisSignatureRef.current = "";
+      liveExplainStampRef.current = 0;
+      liveStableSignatureRef.current = "";
+      liveStableCountRef.current = 0;
+      liveMissCountRef.current = 0;
       startTransition(() => {
         setStage("capture");
       });
@@ -311,9 +495,11 @@ export default function App() {
   async function captureAndAnalyze() {
     try {
       const capturedPreview = captureFrameFromCamera();
-      closeCamera();
       setPreviewUrl(capturedPreview);
       setCaptureSource("camera");
+      if (cameraMode === "still") {
+        closeCamera();
+      }
       await runAnalysisForSource(capturedPreview);
     } catch (error) {
       setAnalysisError(error instanceof Error ? error.message : "拍照失败，请重试。");
@@ -321,7 +507,12 @@ export default function App() {
   }
 
   async function runAnalysis() {
-    if (isCameraOpen) {
+    if (isCameraOpen && cameraMode === "live") {
+      setIsLiveRecognitionActive((current) => !current);
+      return;
+    }
+
+    if (isCameraOpen && cameraMode === "still") {
       await captureAndAnalyze();
       return;
     }
@@ -351,6 +542,7 @@ export default function App() {
 
   function handleSampleFrame() {
     closeCamera();
+    setCameraMode("live");
 
     if (latestBlobUrl.current) {
       URL.revokeObjectURL(latestBlobUrl.current);
@@ -374,6 +566,7 @@ export default function App() {
     }
 
     closeCamera();
+    setCameraMode("live");
 
     if (latestBlobUrl.current) {
       URL.revokeObjectURL(latestBlobUrl.current);
@@ -425,7 +618,9 @@ export default function App() {
   const currentSubtitle =
     stage === "capture"
       ? isCameraOpen
-        ? "对准上半身和骨盆，点击拍照后沿用当前单图分析链路完成坐姿评估。"
+        ? cameraMode === "live"
+          ? "开着摄像头持续识别，姿势变化会实时刷新结果。"
+          : "对准上半身和骨盆，点击拍照后沿用当前单图分析链路完成坐姿评估。"
         : "上传一张清晰坐姿图，或直接打开摄像头拍照，AI 会读取人体关键点再回答你的姿势问题。"
       : stage === "analyzing"
         ? "正在加载姿态模型并检测人体关键点，随后用坐姿规则生成风险结果。"
@@ -434,7 +629,11 @@ export default function App() {
   const ctaText =
     stage === "capture"
       ? isCameraOpen
-        ? "拍照并分析"
+        ? cameraMode === "live"
+          ? isLiveRecognitionActive
+            ? "暂停连续识别"
+            : "开始连续识别"
+          : "拍照并分析"
         : "开始真实分析"
       : stage === "analyzing"
         ? "识别中"
@@ -457,6 +656,16 @@ export default function App() {
         : stage === "analyzing"
           ? "生成中"
           : "--";
+
+  const captureModeLabel = isCameraOpen
+    ? cameraMode === "live"
+      ? isLiveRecognitionActive
+        ? isLiveAnalyzing
+          ? "连续识别中"
+          : "连续识别已开启"
+        : "连续识别已暂停"
+      : "单次拍照模式"
+    : "上传 / 样例模式";
 
   return (
     <main className="app-shell">
@@ -582,6 +791,15 @@ export default function App() {
               <div className="hero-copy">
                 <p className="eyebrow">{stageTitle[stage]}</p>
                 <h2>{currentSubtitle}</h2>
+                <div className="camera-mode">
+                  <span>摄像头流程</span>
+                  <strong>{captureModeLabel}</strong>
+                  <p>
+                    {cameraMode === "live"
+                      ? "连续识别已接入：保持摄像头开启，姿势变化会实时刷新。"
+                      : "单次拍照模式：拍一张，再进入完整分析。"}
+                  </p>
+                </div>
               </div>
 
               <div className="capture-tools">
@@ -597,20 +815,59 @@ export default function App() {
                   </button>
                 </div>
 
+                <div className="mode-switch" aria-label="摄像头识别模式">
+                  <button
+                    type="button"
+                    className={cameraMode === "live" ? "mode-btn active" : "mode-btn"}
+                    onClick={() => {
+                      setCameraMode("live");
+                      setIsLiveRecognitionActive(true);
+                    }}
+                    disabled={!isCameraOpen}
+                  >
+                    连续识别
+                  </button>
+                  <button
+                    type="button"
+                    className={cameraMode === "still" ? "mode-btn active" : "mode-btn"}
+                    onClick={() => {
+                      setCameraMode("still");
+                      setIsLiveRecognitionActive(false);
+                    }}
+                    disabled={!isCameraOpen}
+                  >
+                    单次拍照
+                  </button>
+                </div>
+
                 <div className="tool-row">
                   <button
                     type="button"
                     className={isCameraOpen ? "ghost-btn camera-btn active" : "ghost-btn camera-btn"}
-                    onClick={isCameraOpen ? closeCamera : () => void openCamera()}
+                    onClick={
+                      isCameraOpen && cameraMode === "live"
+                        ? () => setIsLiveRecognitionActive((current) => !current)
+                        : isCameraOpen
+                          ? closeCamera
+                          : () => void openCamera()
+                    }
                     disabled={isRequestingCamera || stage === "analyzing"}
                   >
-                    {isRequestingCamera ? "连接中" : isCameraOpen ? "关闭摄像头" : "打开摄像头"}
+                    {isRequestingCamera
+                      ? "连接中"
+                      : isCameraOpen
+                        ? cameraMode === "live"
+                          ? isLiveRecognitionActive
+                            ? "暂停连续识别"
+                            : "开始连续识别"
+                          : "关闭摄像头"
+                        : "打开摄像头"}
                   </button>
                   <button
                     type="button"
                     className="ghost-btn camera-capture-btn"
                     onClick={() => void captureAndAnalyze()}
-                    disabled={!isCameraOpen || stage === "analyzing"}
+                    disabled={!isCameraOpen || stage === "analyzing" || cameraMode === "live"}
                   >
                     拍照分析
                   </button>
@@ -635,7 +892,7 @@ export default function App() {
                 </div>
 
                 <p className="capture-note">
-                  摄像头版先做单次拍照分析，连续视频识别会放到后续版本。
+                  连续识别时会保持摄像头开启并定时刷新结果；切回拍照模式后再单次分析。
                 </p>
 
                 <label className="question-box">
@@ -673,6 +930,12 @@ export default function App() {
           <div className="metric-chip">
             <span>解释来源</span>
             <strong>{explanationModeLabel}</strong>
+          </div>
+          <div className="metric-chip">
+            <span>摄像头模式</span>
+            <strong className={cameraMode === "live" && isCameraOpen ? "live" : undefined}>
+              {isCameraOpen ? captureModeLabel : "已关闭"}
+            </strong>
           </div>
         </section>
 

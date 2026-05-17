@@ -218,6 +218,38 @@ button {
   line-height: 1.22;
 }
 
+.camera-mode {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 143, 139, 0.16);
+  background: rgba(31, 143, 139, 0.08);
+}
+
+.camera-mode span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.camera-mode strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 15px;
+}
+
+.camera-mode p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.camera-mode strong {
+  color: var(--ink);
+}
+
 .scan-stage {
   position: relative;
   margin-top: 0;
@@ -401,6 +433,33 @@ button {
   margin-top: 18px;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mode-btn {
+  min-height: 42px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mode-btn.active {
+  background: var(--ink);
+  color: white;
+}
+
+.mode-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .tool-row {
   justify-content: space-between;
   gap: 10px;
@@ -504,6 +563,7 @@ button {
 .metrics-strip {
   justify-content: space-between;
   margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 .metric-chip {
@@ -526,6 +586,10 @@ button {
   display: block;
   margin-top: 4px;
   font-size: 16px;
+}
+
+.metric-chip strong.live {
+  color: #106764;
 }
 
 .pose-canvas {
