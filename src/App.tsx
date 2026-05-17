@@ -487,7 +487,15 @@ export default function App() {
                     <span key={`${index}-${landmark.x}-${landmark.y}`} className="pose-landmark" style={{ left: `${landmark.x * 100}%`, top: `${landmark.y * 100}%` }} />
                   ))}
                 </div>
-                <div className="scan-badge">{result ? `${result.detectedKeypoints} keypoints` : "full-body photo"}</div>
+                <div className="scan-badge">
+                  {moduleView === "posture"
+                    ? postureAnalysis
+                      ? `${postureAnalysis.detectedKeypoints} keypoints`
+                      : "sitting photo"
+                    : result
+                      ? `${result.detectedKeypoints} keypoints`
+                      : "full-body photo"}
+                </div>
               </div>
               <div className="pulse-ring pulse-ring-1" />
               <div className="pulse-ring pulse-ring-2" />
@@ -500,7 +508,7 @@ export default function App() {
                   <input accept="image/*" capture="environment" type="file" onChange={handlePhotoInputChange} />
                 </label>
                 <label className="upload-btn">
-                  上传全身照
+                  {moduleView === "posture" ? "上传坐姿照" : "上传全身照"}
                   <input accept="image/*" type="file" onChange={handlePhotoInputChange} />
                 </label>
                 <button type="button" className="ghost-btn" onClick={handleSampleFrame}>
@@ -510,9 +518,13 @@ export default function App() {
 
               {analysisError && <p className="inline-error">{analysisError}</p>}
               <button type="button" className="primary-btn analysis-btn" onClick={() => void runAnalysisForSource(previewUrl)} disabled={isAnalyzing}>
-                {isAnalyzing ? "正在生成" : "生成体态人格"}
+                {isAnalyzing ? "正在分析" : moduleView === "posture" ? "分析坐姿风险" : "生成体态人格"}
               </button>
-              <p className="capture-note">v0 默认不上传原始照片到大模型；当前用浏览器姿态关键点生成体态人格。后续可把结构化指标交给 DeepSeek 做文案增强。</p>
+              <p className="capture-note">
+                {moduleView === "posture"
+                  ? "姿势问诊镜会先用浏览器姿态关键点计算颈部、肩线和腰背风险；AI 不可用时使用本地规则兜底。"
+                  : "v0 默认不上传原始照片到大模型；当前用浏览器姿态关键点生成体态人格。后续可把结构化指标交给 DeepSeek 做文案增强。"}
+              </p>
             </div>
           </article>
         </section>
@@ -565,7 +577,7 @@ export default function App() {
           </section>
         )}
 
-        {result && (
+        {moduleView === "persona" && result && (
           <>
             <section className="privacy-note">
               <strong>隐私与边界</strong>
