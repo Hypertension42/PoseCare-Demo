@@ -778,6 +778,7 @@ button {
   display: grid;
   gap: 14px;
   margin-top: 16px;
+  align-items: stretch;
 }
 
 .daily-card,
@@ -787,12 +788,22 @@ button {
   padding: 18px;
 }
 
+.daily-card,
+.weekly-card,
+.community-card {
+  min-height: 100%;
+}
+
 .daily-card h3,
 .weekly-card h3,
 .community-card h3 {
   font-size: 26px;
   line-height: 1.05;
   letter-spacing: -0.04em;
+}
+
+.community-card h3 {
+  margin-bottom: 0;
 }
 
 .guide-section {
@@ -1069,6 +1080,81 @@ button {
   margin: 18px 0;
 }
 
+.mood-curve-card {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(229, 161, 245, 0.34), transparent 42%),
+    rgba(255, 255, 255, 0.78);
+}
+
+.mood-curve-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mood-curve-head span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mood-curve-head strong {
+  color: #0f172a;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.mood-curve-chart {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  margin-top: 16px;
+  min-height: 150px;
+}
+
+.mood-curve-day {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mood-curve-track {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: 92px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.mood-curve-track span {
+  display: block;
+  width: 100%;
+  min-height: 14px;
+  border-radius: inherit;
+  background: linear-gradient(180deg, #f5c344, #f28482, #b567c2);
+}
+
+.mood-curve-day strong {
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mood-curve-day em {
+  color: #64748b;
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
 .weekly-bars div {
   display: grid;
   grid-template-columns: 72px 1fr 48px;
@@ -1082,12 +1168,27 @@ button {
 
 .community-card > strong {
   display: inline-block;
-  margin-top: 12px;
+  margin-top: 10px;
   padding: 10px 13px;
   border-radius: 999px;
   background: rgba(196, 109, 79, 0.12);
   color: #9a4935;
   font-family: "Noto Sans SC", sans-serif;
+}
+
+.community-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.community-card .bullet-list {
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.community-card .bullet-list.compact li {
+  padding: 10px 12px;
+  line-height: 1.42;
 }
 
 .content-frame .weekly-card,
@@ -1212,6 +1313,11 @@ button {
 
   .status-grid {
     grid-template-columns: 1.05fr 1fr 0.9fr;
+    align-items: stretch;
+  }
+
+  .status-grid > article {
+    height: 100%;
   }
 
   .journal-grid {
