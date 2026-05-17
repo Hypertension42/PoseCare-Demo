@@ -16,6 +16,61 @@ function toStringArray(value: unknown, fallback: string[], minLength: number) {
   return merged.slice(0, Math.max(minLength, Math.min(4, merged.length)));
 }
 
+function recommendPersonaSeed(body: BodyPersonaGenerateRequest) {
+  const { metrics } = body.localPersona;
+  const { derived } = body.poseSummary;
+  const asymmetry = derived.shoulderTilt + derived.hipTilt;
+  const openness = metrics.shoulderEase + metrics.lineFlow + metrics.presence;
+  const grounded = metrics.balance + metrics.stability;
+  const softness = metrics.relaxation + metrics.balance;
+
+  if (openness >= 235 && asymmetry <= 0.035) {
+    return {
+      seedName: "山茶舒展型人格",
+      seedKeywords: ["舒展", "明亮", "从容", "延展"],
+      reason: "肩颈舒展、线条延展和气质外放都较高，整体更像稳定打开的长线条气质。",
+    };
+  }
+
+  if (grounded >= 155 && metrics.presence >= 74) {
+    return {
+      seedName: "森林松果型人格",
+      seedKeywords: ["稳定", "自然", "沉静", "支撑"],
+      reason: "重心平衡和站姿稳定较高，身体气质更偏安定、耐看和有支撑感。",
+    };
+  }
+
+  if (softness >= 150 && metrics.relaxation >= 72) {
+    return {
+      seedName: "暖阳小鹿型人格",
+      seedKeywords: ["柔和", "亲近", "恢复", "灵动"],
+      reason: "松弛感和平衡感较好，身体表达更柔和、亲近，有轻盈恢复感。",
+    };
+  }
+
+  if (metrics.lineFlow >= 78 || derived.verticalLine >= 0.3) {
+    return {
+      seedName: "月光清泉型人格",
+      seedKeywords: ["流动", "细腻", "克制", "清爽"],
+      reason: "线条延展或纵向比例更突出，适合偏流动、细腻、安静的体态人格。",
+    };
+  }
+
+  if (asymmetry > 0.055 || Math.abs(derived.centerOffset) > 0.08) {
+    return {
+      seedName: "微风回稳型人格",
+      seedKeywords: ["回稳", "保护", "柔软", "慢慢打开"],
+      reason: "肩髋或中心偏移提示今天的身体更需要回稳和照顾，适合温和恢复型人格。",
+    };
+  }
+
+  return {
+    seedName: "晨雾天鹅型人格",
+    seedKeywords: ["清透", "轻盈", "向上", "安静"],
+    reason: "整体指标较均衡，肩颈和线条呈现清透、轻盈、安静的身体气质。",
+  };
+}
+
 export function isBodyPersonaGenerateRequest(body: Partial<BodyPersonaGenerateRequest>): body is BodyPersonaGenerateRequest {
   return Boolean(body.localPersona?.postureId && body.localPersona?.metrics && body.poseSummary?.keypoints && body.poseSummary?.derived);
 }
@@ -90,6 +145,7 @@ function normalizeChanges(value: unknown, fallback: BodyPersonaGenerateResponse[
 }
 
 function normalizeBodyPersonaResponse(value: Partial<BodyPersonaGenerateResponse>, body: BodyPersonaGenerateRequest): BodyPersonaGenerateResponse {
+  const seed = recommendPersonaSeed(body);
   const fallbackEnergy = clampNumber(
     (body.localPersona.metrics.shoulderEase +
       body.localPersona.metrics.balance +
@@ -107,9 +163,9 @@ function normalizeBodyPersonaResponse(value: Partial<BodyPersonaGenerateResponse
   ];
 
   return {
-    personaName: typeof value.personaName === "string" ? value.personaName : body.localPersona.personaName,
+    personaName: typeof value.personaName === "string" ? value.personaName : seed.seedName,
     description: typeof value.description === "string" ? value.description : body.localPersona.description,
-    keywords: toStringArray(value.keywords, body.localPersona.keywords, 3),
+    keywords: toStringArray(value.keywords, seed.seedKeywords, 3),
     strengths: toStringArray(value.strengths, body.localPersona.strengths, 2),
     journal: normalizeJournal(value.journal),
     dailyCard: {
@@ -131,7 +187,7 @@ function normalizeBodyPersonaResponse(value: Partial<BodyPersonaGenerateResponse
           : "下周可以继续观察肩颈留白、站姿重心和线条延展的变化。",
     },
     communityPreview: {
-      groupName: typeof value.communityPreview?.groupName === "string" ? value.communityPreview.groupName : `${body.localPersona.personaName}小组`,
+      groupName: typeof value.communityPreview?.groupName === "string" ? value.communityPreview.groupName : `${seed.seedName}小组`,
       similarity: clampNumber(value.communityPreview?.similarity, 86, 72, 96),
       inspirations: toStringArray(value.communityPreview?.inspirations, ["同人格穿搭比例", "自然侧身拍照模板", "肩颈放松打卡"], 3),
     },
@@ -140,6 +196,7 @@ function normalizeBodyPersonaResponse(value: Partial<BodyPersonaGenerateResponse
 
 export async function generateBodyPersona(body: BodyPersonaGenerateRequest): Promise<BodyPersonaGenerateResponse> {
   const client = getAIClient();
+  const seed = recommendPersonaSeed(body);
   const messages = [
     {
       role: "system" as const,
@@ -151,8 +208,12 @@ export async function generateBodyPersona(body: BodyPersonaGenerateRequest): Pro
       content: JSON.stringify(
         {
           task:
-            "请基于结构化体态数据动态生成更贴合该用户的体态人格内容。你不能声称看到了照片，只能说“根据体态关键点和指标”。必须返回这些键：personaName, description, keywords, strengths, journal, dailyCard, weeklyCard, communityPreview。journal 必须包含 title 为 体态气质档案、体态穿搭推荐、拍照姿势推荐、放松运动推荐、相似体态灵感页 的项目，每项 items 3 条。dailyCard.energy 为 0-100。weeklyCard.changes 包含 松弛感、舒展度、活力感、自信感。communityPreview.similarity 为 72-96。",
-          localPersona: body.localPersona,
+            "请基于结构化体态数据动态生成更贴合该用户的体态人格内容。你不能声称看到了照片，只能说“根据体态关键点和指标”。重要：localPersona 只是本地兜底底稿，不允许直接照抄 localPersona.personaName。你必须根据 personaSeed、metrics 和 poseSummary 重新判断人格名称；如果数据更符合 personaSeed，请使用或轻微改写 personaSeed.seedName；如果不符合，可以生成新的温柔审美化人格名。必须返回这些键：personaName, description, keywords, strengths, journal, dailyCard, weeklyCard, communityPreview。journal 必须包含 title 为 体态气质档案、体态穿搭推荐、拍照姿势推荐、放松运动推荐、相似体态灵感页 的项目，每项 items 3 条。dailyCard.energy 为 0-100。weeklyCard.changes 包含 松弛感、舒展度、活力感、自信感。communityPreview.similarity 为 72-96。",
+          personaSeed: seed,
+          localPersona: {
+            ...body.localPersona,
+            personaName: "本地兜底人格，不要直接沿用",
+          },
           poseSummary: body.poseSummary,
         },
         null,
